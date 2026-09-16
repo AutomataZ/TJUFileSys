@@ -1,0 +1,11 @@
+# 构建产物
+code/build/
+
+# 运行时由 fformat 生成的模拟磁盘镜像
+myDisk.img
+
+# 编辑器配置
+.vscode/
+
+# 课程材料
+课程设计.pdf
