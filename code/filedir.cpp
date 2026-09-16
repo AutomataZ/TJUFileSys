@@ -33,9 +33,8 @@ void FileDir::open(std::fstream& disk, MemInodeTable& i_table, OpenFileTable& f_
     else //如果没有打开就修改i_table和f_table
     {
         i_table.append(disk, inode);
-        MemInode* i = &i_table.inode[i_table.size() - 1];
         f_table.append(disk, OpenFileDir{
-            FILE_PERMISSION::READ_AND_WRITE, i, 0
+            FILE_PERMISSION::READ_AND_WRITE, inode, 0
         });
     }
 }
@@ -48,10 +47,9 @@ void FileDir::close(std::fstream& disk, MemInodeTable& i_table, OpenFileTable& f
     }
     else //如果打开了就修改i_table和f_table
     {
-        MemInode* i = &i_table.inode[i_table.size() - 1];
         i_table.erase(disk, inode);
         f_table.erase(disk, OpenFileDir{
-            FILE_PERMISSION::READ_AND_WRITE, i, 0
+            FILE_PERMISSION::READ_AND_WRITE, inode, 0
         });
     }
 }

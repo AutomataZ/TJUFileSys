@@ -91,7 +91,7 @@ int OpenFileTable::append(std::fstream& disk, OpenFileDir dir)
 
 int OpenFileTable::erase(std::fstream& disk, OpenFileDir dir)
 {
-    int cur = find(dir.f_inode->i_number);
+    int cur = find(dir.f_inode_num);
     if (cur != -1)
     {
         for (int i = cur; i < t_size - 1; i++)
@@ -113,7 +113,7 @@ int OpenFileTable::find(int inode_index)
 {
     for (int i = 0; i < t_size; i++)
     {
-        if (inode_index == file[i].f_inode->i_number)
+        if (inode_index == file[i].f_inode_num)
             return i;
     }
     return -1;

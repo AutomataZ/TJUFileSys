@@ -23,6 +23,9 @@ public:
         d_size = 0;
         memset(d_addr, 0, sizeof(d_addr));
         memset(d_addr, -1, sizeof(d_addr));
+        // load 是保持 inode 大小为 64 字节的填充字段, 不参与逻辑,
+        // 但会随 sizeof(Inode) 整体落盘, 不初始化会把栈上的残留数据写进磁盘
+        memset(load, 0, sizeof(load));
     }
     bool isEmpty();
 

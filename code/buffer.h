@@ -20,6 +20,8 @@ public:
     friend class BQueue;
 #ifdef DEBUG_ENV
     void print();
+    /// @brief 单行输出缓存块状态, 用于 cache 命令展示整个队列
+    void printBrief();
 #endif
 };
 
@@ -45,6 +47,8 @@ public:
     Buffer* find(int blkno);
 #ifdef DEBUG_ENV
     void print();
+    /// @brief 按 LRU 顺序单行列出队列中每个缓存块
+    void printBrief();
 #endif
 };
 

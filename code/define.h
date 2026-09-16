@@ -76,6 +76,13 @@ const std::string disk_name = "../../myDisk.img";
     8   fwrite  写文件           3参
     9   flseek  定位文件读写指针  1参
     10  fdelete 删除文件         1参
+    11  exit    退出文件系统     0参
+
+    以下为调试命令, 用于观察文件系统内部结构
+    12  sb      打印superblock   0参
+    13  cache   打印缓存队列     0参
+    14  imem    打印内存inode表  0参
+    15  ftab    打印打开文件表   0参
 */
 const std::string cmd_supported[] = {
     "fformat",
@@ -89,7 +96,11 @@ const std::string cmd_supported[] = {
     "fwrite",
     "flseek",
     "fdelete",
-    "exit"
+    "exit",
+    "sb",
+    "cache",
+    "imem",
+    "ftab"
 };
 
 // 最大参数个数

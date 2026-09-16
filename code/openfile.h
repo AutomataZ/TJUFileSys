@@ -18,7 +18,13 @@ public:
     int i_number; //inode号
 #ifdef DEBUG_ENV
     void print() {
-        cout << "inode号为: " << i_number << endl;
+        const char* type = d_mode == FILE_MODE::dir_file ? "目录" :
+                           d_mode == FILE_MODE::normal_file ? "文件" : "空";
+        cout << "inode号 " << i_number << "  类型 " << type
+             << "  大小 " << d_size << " 字节  索引表 [";
+        for (int i = 0; i < 10; i++)
+            cout << d_addr[i] << (i == 9 ? "" : " ");
+        cout << "]" << endl;
     }
 #endif
 };
@@ -43,10 +49,11 @@ public:
     string getCurrentFullPath(std::fstream& disk);
 #ifdef DEBUG_ENV
     void print() {
-        cout << "当前内存inode表是: " << endl;
+        cout << "当前内存inode表 (共 " << i_size << " / " << MEM_INODE_NUM
+             << " 项, 当前目录下标 " << current_dir << "):" << endl;
         for (int i = 0; i < i_size; i++)
         {
-            cout << i << ": ";
+            cout << "  [" << i << "] ";
             inode[i].print();
         }
     }
@@ -57,13 +64,15 @@ class OpenFileDir {
 protected:
 public:
     int f_flag;
-    MemInode* f_inode;
+    // 这里存 inode 号而不是指向 i_table.inode[] 的指针:
+    // MemInodeTable::erase 会左移数组, 裸指针会随之整体偏移而失效
+    int f_inode_num;
     int f_offset; //文件指针的位置
 #ifdef DEBUG_ENV
     void print() {
-        cout << "打开模式是: " << f_flag << endl;
-        cout << "对应inode是: " << f_inode->i_number << endl;
-        cout << "文件指针是: " << f_offset << endl;
+        cout << "权限 " << (f_flag == FILE_PERMISSION::READ_ONLY ? "只读" : "读写")
+             << "  inode号 " << f_inode_num
+             << "  读写指针 " << f_offset << endl;
     }
 #endif
 };
@@ -82,10 +91,11 @@ public:
     void setOffset(int inode_index, int offset);
 #ifdef DEBUG_ENV
     void print() {
-        cout << "当前系统打开文件表是: " << endl;
+        cout << "当前系统打开文件表 (共 " << t_size << " / "
+             << OPEN_FILE_TABLE_SIZE << " 项):" << endl;
         for (int i = 0; i < t_size; i++)
         {
-            cout << "表项" << i << "是: " << endl;
+            cout << "  [" << i << "] ";
             file[i].print();
         }
     }

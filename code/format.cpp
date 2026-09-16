@@ -47,6 +47,11 @@ void diskFormat(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
     inode.appendBlk(disk, sblk, inode_index, file_block_index);
     inode.setMode(FILE_MODE::dir_file);
 
+    // 将内存 inode 整体写入磁盘
+    // appendBlk 只单独写了 d_addr, setMode 只改了内存对象, 此处必须落盘,
+    // 否则 dir.open() 从磁盘重读 inode 时 d_mode 仍是 0
+    writeDisk(disk, &inode, sizeof(Inode), INODE_AREA_OFFSET + inode_index * sizeof(Inode));
+
     //cout << "文件的盘块是" << inode.BMap(disk, 0) << endl;
 
     // 在空闲盘块上新建一个根目录文件 / 

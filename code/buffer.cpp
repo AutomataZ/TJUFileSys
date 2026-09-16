@@ -5,6 +5,7 @@
 
 #ifdef DEBUG_ENV
 #include <iostream>
+#include <iomanip>
 #endif
 
 const int BLKNO_NOT_FOUND = -1;
@@ -34,6 +35,19 @@ void Buffer::print()
         std::cout << load[i];
     std::cout << std::endl;
     std::cout << "延迟写标值为: " << del_write << std::endl;
+}
+
+void Buffer::printBrief()
+{
+    std::cout << "块号 " << b_blkno
+              << (del_write ? "  [延迟写]" : "  [已同步]")
+              << "  内容前16字节: ";
+    for (int i = 0; i < 16; i++)
+    {
+        std::cout << std::hex << std::setw(2) << std::setfill('0')
+                  << (int)(unsigned char)load[i] << " ";
+    }
+    std::cout << std::dec << std::setfill(' ') << std::endl;
 }
 #endif
 
@@ -123,6 +137,20 @@ void BQueue::print()
         std::cout << "第" << i+1 << "个缓存为: " << std::endl;
         q[i].print();
     }
+}
+
+void BQueue::printBrief()
+{
+    // getBlk 命中时把块移到队尾, 队满时淘汰队首, 故下标 0 是最久未使用的
+    std::cout << "缓存队列 (队首 = 最久未使用, 下一个被淘汰): "
+              << num << " / " << MAX_BQUEUE_SIZE << std::endl;
+    for (int i = 0; i < num; i++)
+    {
+        std::cout << "  [" << i << "] ";
+        q[i].printBrief();
+    }
+    if (num == 0)
+        std::cout << "  (空)" << std::endl;
 }
 #endif
 

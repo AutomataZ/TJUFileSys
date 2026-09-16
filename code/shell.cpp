@@ -426,7 +426,12 @@ void cd(std::string dirName, std::fstream& disk, SuperBlock& sblk, MemInodeTable
         if (dir.is_root()) //根目录没有父目录
             return;
         i_table.erase(disk, dir.getInode());
-        f_table.erase(disk, f_table.file[f_table.find(index)]);
+        // find 找不到时返回 -1, 不加判断就用作下标会越界读到非法数据
+        int f_cur = f_table.find(index);
+        if (f_cur != -1)
+        {
+            f_table.erase(disk, f_table.file[f_cur]);
+        }
         i_table.modifyCurrentDir(i_table.find(dir.getFaInode()));
         //cout << "当前打开inode是: " << endl;
         //i_table.inode[i_table.find(index)].print();
@@ -738,7 +743,13 @@ void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
         //f_table.print();
         string cmd;
         string args[MAX_ARGS_NUM];
-        getline(cin, usr_input);
+        // getline 在输入流结束时会使流进入失败状态, 此时不会再有输入
+        // 若不处理, 下面的空串解析会返回 0 并 continue, 导致循环空转不退出
+        // 这里等价于输入了 exit, 走退出分支以保证缓存与 superblock 落盘
+        if (!getline(cin, usr_input))
+        {
+            usr_input = "exit";
+        }
         if (!inputToCmd(usr_input, cmd, args))
             continue;
         if (cmd == cmd_supported[0]) //fformat
@@ -835,6 +846,22 @@ void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
             writeDisk(disk, &sblk, sizeof(SuperBlock), 0);
             cout << "正在退出 misakifs ..." << endl;
             break;
+        }
+        else if (cmd == cmd_supported[12]) //sb
+        {
+            sblk.print();
+        }
+        else if (cmd == cmd_supported[13]) //cache
+        {
+            b_mgr.bq.printBrief();
+        }
+        else if (cmd == cmd_supported[14]) //imem
+        {
+            i_table.print();
+        }
+        else if (cmd == cmd_supported[15]) //ftab
+        {
+            f_table.print();
         }
         else
         {
