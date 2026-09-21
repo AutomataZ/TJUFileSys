@@ -13,7 +13,7 @@ FileDir::FileDir(std::string filename, int16_t inode, int16_t fa_inode)
     this->fa_inode = fa_inode;
 }
 
-void FileDir::create(std::fstream& disk, int blkno)
+void FileDir::create(DiskFile& disk, int blkno)
 {
     // 块号为负说明调用方没有给这个文件分配首块。writeDisk 只在 offset >= 0 时
     // 才 seekp, 负偏移换算出来的 -512 会让它退化成"从流的当前位置写"——通常是
@@ -36,7 +36,7 @@ bool FileDir::is_open(MemInodeTable& i_table, OpenFileTable& f_table)
     return true;
 }
 
-void FileDir::open(std::fstream& disk, MemInodeTable& i_table, OpenFileTable& f_table)
+void FileDir::open(DiskFile& disk, MemInodeTable& i_table, OpenFileTable& f_table)
 {
     if (is_open(i_table, f_table)) //先查询这个文件是否已经打开
     {
@@ -51,7 +51,7 @@ void FileDir::open(std::fstream& disk, MemInodeTable& i_table, OpenFileTable& f_
     }
 }
 
-void FileDir::close(std::fstream& disk, MemInodeTable& i_table, OpenFileTable& f_table)
+void FileDir::close(DiskFile& disk, MemInodeTable& i_table, OpenFileTable& f_table)
 {
     if (!is_open(i_table, f_table)) //先查询这个文件是否已经打开
     {

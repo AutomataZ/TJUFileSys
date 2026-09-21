@@ -1,8 +1,12 @@
 #pragma once
-#include <fstream>
 #include "define.h"
 
 // superblock占据磁盘的前2块, 也就是1024字节
+
+// 这个类就是盘上那 1024 字节的布局, 不能加成员: sizeof(SuperBlock) 被若干处
+// 序列化直接当作长度用。缓存管理器因此只能按参数传进来。
+class BufferMgr;
+class DiskFile;
 
 class SuperBlock{
 protected:
@@ -27,26 +31,28 @@ public:
     SuperBlock();
 
     // 从模拟磁盘的文件中初始化 superblock 的信息
-    SuperBlock(std::fstream& disk);
+    SuperBlock(DiskFile& disk);
 
     // 分配 inode
-    int distributeInode(std::fstream& disk);
+    int distributeInode(DiskFile& disk);
 
     // 释放 inode
     void releaseInode(int index);
 
     // 分配盘块
-    int distributeBlk(std::fstream& disk);
+    /// @param b_mgr 盘块易主, 需要作废缓存里该块的旧副本
+    int distributeBlk(DiskFile& disk, BufferMgr& b_mgr);
 
     // 释放盘块
-    void releaseBlk(std::fstream& disk, int index);
+    /// @param b_mgr 盘块易主, 需要作废缓存里该块的旧副本
+    void releaseBlk(DiskFile& disk, int index, BufferMgr& b_mgr);
 
     // 将修改过的 superblock 信息存盘
-    void save(std::fstream& file);
+    void save(DiskFile& file);
 
     // 将空闲盘块串起来
     // ps.写的不好, 考虑重写
-    void FormatFreeBlk(std::fstream& disk);
+    void FormatFreeBlk(DiskFile& disk);
 
     /// @brief 输出superblock的内部信息
     void print();

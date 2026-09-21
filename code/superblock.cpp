@@ -1,6 +1,7 @@
 #include <cstring>
 #include "superblock.h"
 #include "inode.h"
+#include "buffer.h"
 #include "wirteDisk/wirteDisk.h"
 #ifdef DEBUG_ENV
 #include <iostream>
@@ -8,7 +9,7 @@
 
 using namespace std;
 
-void SuperBlock::FormatFreeBlk(std::fstream& disk)
+void SuperBlock::FormatFreeBlk(DiskFile& disk)
 {
     // 以一个 int 变量为一个字
     // 盘块的前 101 个字用来储存前一个分组的索引
@@ -110,17 +111,20 @@ SuperBlock::SuperBlock()
     memset(load, -1, sizeof(load));
 }
 
-SuperBlock::SuperBlock(fstream& disk)
+SuperBlock::SuperBlock(DiskFile& disk)
 {
     readDisk(disk, this, sizeof(SuperBlock), 0);
 }
 
-int SuperBlock::distributeInode(fstream& disk)
+int SuperBlock::distributeInode(DiskFile& disk)
 {
     if (s_ninode > 0) // 退栈
     {
         int ret = s_inode[--s_ninode];
         s_inode[s_ninode] = INODE_IS_OCCUPIED;
+        // 交出去之前先把空闲 inode 表落盘。盘上那份表是重启后判断"哪些 inode
+        // 还能用"的唯一依据, 它慢一步, 已经分出去的 inode 就会被再分一次
+        save(disk);
         return ret;
     }
     else // 在 inode 区搜索 100 个空闲 inode
@@ -142,6 +146,7 @@ int SuperBlock::distributeInode(fstream& disk)
         {
             int ret = s_inode[--s_ninode];
             s_inode[s_ninode] = INODE_IS_OCCUPIED;
+            save(disk);   // 同上: 搜索出来的这张表也要在交出去之前落盘
             return ret;
         }
     }
@@ -156,7 +161,7 @@ void SuperBlock::releaseInode(int index)
     }
 }
 
-int SuperBlock::distributeBlk(std::fstream& disk)
+int SuperBlock::distributeBlk(DiskFile& disk, BufferMgr& b_mgr)
 {
     if (s_nfree > 0) // 取 s_free[] 的最后一个成员分配走
     {
@@ -179,13 +184,24 @@ int SuperBlock::distributeBlk(std::fstream& disk)
                 readDisk(disk, s_free + i, sizeof(int), addr + (ini + 1 + i) * sizeof(int));
             }
         }
+        // 块号交出去之前先把空闲链落盘: 盘上那份链要是还列着这个块, 重启后它会被
+        // 再分一次, 两个文件共用同一块。回收方向(releaseBlk)不落盘 —— 少记一次
+        // 释放最坏是块从链上消失, 找不回但也不会被谁用上。
+        save(disk);
+        // 缓存里那份是上一个主人的内容, 与这个块再无关系: 留着它, 淘汰或 clear 时
+        // 就会把它写回磁盘, 盖掉新主人写上去的东西
+        b_mgr.remove(ret);
         return ret;
     }
     return -1;
 }
 
-void SuperBlock::releaseBlk(std::fstream& disk, int index)
+void SuperBlock::releaseBlk(DiskFile& disk, int index, BufferMgr& b_mgr)
 {
+    // 块刚离开它的主人, 缓存里那份副本就此作废。下面这个块还可能被当成新的分组
+    // 索引块直接写上 101 个字, 更不能留着一份旧内容等着被写回去
+    b_mgr.remove(index);
+
     if (s_nfree < 100)
     {
         s_free[s_nfree++] = index;
@@ -203,9 +219,10 @@ void SuperBlock::releaseBlk(std::fstream& disk, int index)
     }
 }
 
-void SuperBlock::save(fstream& file)
+void SuperBlock::save(DiskFile& file)
 {
-    return;
+    // 空闲 inode 表与空闲盘块链都在这个对象里, 整块写回磁盘的前 1024 字节
+    writeDisk(file, this, sizeof(SuperBlock), 0);
 }
 
 void SuperBlock::print()

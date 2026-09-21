@@ -128,6 +128,34 @@ Buffer* BQueue::find(int blkno)
     return &err;
 }
 
+// 摘掉队列中间的某一项: 与 pop 一样把后面的往前挪, 空出来的槽位照样清理干净
+void BQueue::remove(int blkno)
+{
+    int flag = BLKNO_NOT_FOUND;
+    for (int i = 0; i < num; i++)
+    {
+        if (q[i].getBlkno() == blkno)
+        {
+            flag = i;
+            break;
+        }
+    }
+    if (flag == BLKNO_NOT_FOUND)
+        return;
+
+    for (int i = flag + 1; i < num; i++)
+    {
+        q[i - 1] = q[i];
+    }
+
+    q[num - 1].b_blkno = -1;
+    q[num - 1].del_write = false;
+    q[num - 1].new_create = true;
+    memset(q[num - 1].load, 0, sizeof(q[num - 1].load));
+
+    num--;
+}
+
 #ifdef DEBUG_ENV
 void BQueue::print()
 {
@@ -154,7 +182,7 @@ void BQueue::printBrief()
 }
 #endif
 
-Buffer* BufferMgr::getBlk(std::fstream& disk, int blkno)
+Buffer* BufferMgr::getBlk(DiskFile& disk, int blkno)
 {
     if (bq.find(blkno)->getBlkno() >= 0) // 先在已经分配过的缓存里寻找
     {
@@ -175,7 +203,7 @@ Buffer* BufferMgr::getBlk(std::fstream& disk, int blkno)
     return bq.find(blkno);
 }
 
-Buffer* BufferMgr::Bread(std::fstream& disk, int blkno)
+Buffer* BufferMgr::Bread(DiskFile& disk, int blkno)
 {
     // 不论缓存中是否有内容, 返回一个跟 blkno 相关联的缓存块
     Buffer* bp = getBlk(disk, blkno);
@@ -188,7 +216,7 @@ Buffer* BufferMgr::Bread(std::fstream& disk, int blkno)
     return bp;
 }
 
-Buffer* BufferMgr::Bwrite(std::fstream& disk, int blkno, std::string& buffer, int offset, int size)
+Buffer* BufferMgr::Bwrite(DiskFile& disk, int blkno, std::string& buffer, int offset, int size)
 {
     // 不论缓存中是否有内容, 返回一个跟 blkno 相关联的缓存块
     //
@@ -213,7 +241,32 @@ Buffer* BufferMgr::Bwrite(std::fstream& disk, int blkno, std::string& buffer, in
     return bp;
 }
 
-void BufferMgr::clear(std::fstream& disk)
+void BufferMgr::remove(int blkno)
+{
+    bq.remove(blkno);
+}
+
+// 把挂着的脏块写回磁盘, 但缓存照留。提交点要的就是这个: clear 顺手把缓存清空,
+// 用在提交点上会让后续访问全部落空, 而提交点只关心"盘上那份是全的"。
+void BQueue::flush(DiskFile& disk)
+{
+    for (int i = 0; i < num; i++)
+    {
+        if (q[i].del_write)
+        {
+            writeDisk(disk, q[i].getLoad(), BYTE_PER_BLOCK, q[i].getBlkno() * BYTE_PER_BLOCK);
+            // 已经落到盘上了, 再挂着这个标记只会让它在淘汰时被重复写一遍
+            q[i].del_write = false;
+        }
+    }
+}
+
+void BufferMgr::flush(DiskFile& disk)
+{
+    bq.flush(disk);
+}
+
+void BufferMgr::clear(DiskFile& disk)
 {
     while(!bq.empty())
     {

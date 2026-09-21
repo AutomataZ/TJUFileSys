@@ -3,7 +3,6 @@
 #include "superblock.h"
 #include "inode.h"
 #include "wirteDisk/wirteDisk.h"
-#include <fstream>
 
 // SuperBlock 与 Inode 的关键字段都是 protected, 测试无法直接读取。
 // 这里定义布局完全相同的 POD 镜像结构, 借 readDisk/writeDisk 按字节搬运:
@@ -45,28 +44,28 @@ inline int inodeOffset(int inode_index)
 }
 
 // 把内存 superblock 快照落盘后读回镜像
-inline void snapshotSuperBlock(std::fstream& disk, SuperBlock& sblk, SuperBlockMirror& m)
+inline void snapshotSuperBlock(DiskFile& disk, SuperBlock& sblk, SuperBlockMirror& m)
 {
     writeDisk(disk, &sblk, sizeof(SuperBlock), 0);
     readDisk(disk, &m, sizeof(SuperBlockMirror), 0);
 }
 
 // 用镜像内容覆盖磁盘 superblock, 再载入内存 SuperBlock
-inline void loadSuperBlock(std::fstream& disk, SuperBlockMirror& m, SuperBlock& sblk)
+inline void loadSuperBlock(DiskFile& disk, SuperBlockMirror& m, SuperBlock& sblk)
 {
     writeDisk(disk, &m, sizeof(SuperBlockMirror), 0);
     readDisk(disk, &sblk, sizeof(SuperBlock), 0);
 }
 
 // 把内存 inode 快照落盘后读回镜像
-inline void snapshotInode(std::fstream& disk, Inode& inode, int inode_index, InodeMirror& m)
+inline void snapshotInode(DiskFile& disk, Inode& inode, int inode_index, InodeMirror& m)
 {
     writeDisk(disk, &inode, sizeof(Inode), inodeOffset(inode_index));
     readDisk(disk, &m, sizeof(InodeMirror), inodeOffset(inode_index));
 }
 
 // 直接读取磁盘上某个 inode 的镜像
-inline void readInodeMirror(std::fstream& disk, int inode_index, InodeMirror& m)
+inline void readInodeMirror(DiskFile& disk, int inode_index, InodeMirror& m)
 {
     readDisk(disk, &m, sizeof(InodeMirror), inodeOffset(inode_index));
 }

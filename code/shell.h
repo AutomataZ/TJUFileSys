@@ -1,6 +1,6 @@
 #pragma once
 #include <string>
-#include <fstream>
+class DiskFile;
 #include "./define.h"
 #include "superblock.h"
 #include "openfile.h"
@@ -19,31 +19,31 @@ protected:
 public:
     Shell();
     ~Shell();
-    void init(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& t_table);
-    void usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
+    void init(DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& t_table);
+    void usr(DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
 };
 
-void printCurrentPath(std::fstream& disk, MemInodeTable& i_table);
-int getCurrentBlk(std::fstream& disk, MemInodeTable& i_table);
-int getCurrentDirSubFileNum(std::fstream& disk, MemInodeTable& i_table);
-int getFileModeByInodeIndex(std::fstream& disk, int index);
-string getFileNameByInodeIndex(std::fstream& disk, int index);
+void printCurrentPath(DiskFile& disk, MemInodeTable& i_table);
+int getCurrentBlk(DiskFile& disk, MemInodeTable& i_table);
+int getCurrentDirSubFileNum(DiskFile& disk, MemInodeTable& i_table);
+int getFileModeByInodeIndex(DiskFile& disk, int index);
+string getFileNameByInodeIndex(DiskFile& disk, int index);
 
-void newFile(int mode, string name, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, int size = 0);
-int openCloseFile(int mode, string name, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);
-std::string readWriteFile(int mode, string name, string& str, int size, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
+void newFile(int mode, string name, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr, int size);
+int openCloseFile(int mode, string name, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);
+std::string readWriteFile(int mode, string name, string& str, int size, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
 
 int inputToCmd(const std::string& input, std::string& cmd, std::string(&args)[MAX_ARGS_NUM]);
 int parseNonNegInt(const std::string& s, int& out);
 
-void fformat(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
-void ls(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);
-int mkdir(std::string dirName, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);
-void cd(std::string dirName, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);
-int fcreat(std::string fileName, int size, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);
-int fopen(std::string fileName, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);
-int fclose(std::string fileName, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);
-std::string fread(std::string fileName, int size, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
-void fwrite(std::string fileName, std::string& buffer, int size, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
-int flseek(string fileName, int offset, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);
-void fdelete(std::string fileName, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);
+void fformat(DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
+void ls(DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);
+int mkdir(std::string dirName, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
+void cd(std::string dirName, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);
+int fcreat(std::string fileName, int size, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
+int fopen(std::string fileName, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
+int fclose(std::string fileName, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
+std::string fread(std::string fileName, int size, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
+void fwrite(std::string fileName, std::string& buffer, int size, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
+int flseek(string fileName, int offset, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);
+void fdelete(std::string fileName, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);

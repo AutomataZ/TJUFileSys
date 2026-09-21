@@ -12,7 +12,7 @@ int MemInodeTable::find(int inode_index)
     return -1;
 }
 
-int MemInodeTable::append(std::fstream& disk, int inode_index)
+int MemInodeTable::append(DiskFile& disk, int inode_index)
 {
     if (i_size < MEM_INODE_NUM)
     {
@@ -27,7 +27,7 @@ int MemInodeTable::append(std::fstream& disk, int inode_index)
 }
 
 // 在inode_table中删除一个inode
-int MemInodeTable::erase(std::fstream& disk, int inode_index)
+int MemInodeTable::erase(DiskFile& disk, int inode_index)
 {
     int cur = find(inode_index);
     if (cur != -1)
@@ -42,7 +42,7 @@ int MemInodeTable::erase(std::fstream& disk, int inode_index)
     return -1;
 }
 
-string MemInodeTable::getCurrentDirName(std::fstream& disk)
+string MemInodeTable::getCurrentDirName(DiskFile& disk)
 {
     int index = inode[current_dir].BMap(disk, 0);
     FileDir dir;
@@ -50,7 +50,7 @@ string MemInodeTable::getCurrentDirName(std::fstream& disk)
     return dir.getFileName();
 }
 
-string MemInodeTable::getCurrentFullPath(std::fstream& disk)
+string MemInodeTable::getCurrentFullPath(DiskFile& disk)
 {
     // index 是这个inode管理的第一个物理块块号，文件目录项在这里
     int index = inode[current_dir].BMap(disk, 0);
@@ -79,7 +79,7 @@ void MemInodeTable::clear()
     i_size = 0;
 }
 
-int OpenFileTable::append(std::fstream& disk, OpenFileDir dir)
+int OpenFileTable::append(DiskFile& disk, OpenFileDir dir)
 {
     if (t_size < OPEN_FILE_TABLE_SIZE)
     {
@@ -89,7 +89,7 @@ int OpenFileTable::append(std::fstream& disk, OpenFileDir dir)
     return -1;
 }
 
-int OpenFileTable::erase(std::fstream& disk, OpenFileDir dir)
+int OpenFileTable::erase(DiskFile& disk, OpenFileDir dir)
 {
     int cur = find(dir.f_inode_num);
     if (cur != -1)

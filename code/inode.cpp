@@ -10,7 +10,7 @@ bool Inode::isEmpty()
     return !d_mode;
 }
 
-void Inode::appendBlk(std::fstream& disk, SuperBlock& s, int inode_index, int blkno)
+void Inode::appendBlk(DiskFile& disk, SuperBlock& s, int inode_index, int blkno, BufferMgr& b_mgr)
 {
     int inode_offset = INODE_AREA_OFFSET + inode_index * sizeof(Inode) + 2 * sizeof(int); //这个inode的d_addr[0]的起始地址
     // 当前 inode 中已经管理了几个块, 也就是新块该落在哪个槽位。
@@ -24,7 +24,7 @@ void Inode::appendBlk(std::fstream& disk, SuperBlock& s, int inode_index, int bl
         // 如果加完后, 直接索引块用完了, 需要分配一个一级索引块
         if (blk_num == DIRECT_INDEX_NUM - 1)
         {
-            int blk_index = s.distributeBlk(disk);
+            int blk_index = s.distributeBlk(disk, b_mgr);
             d_addr[DIRECT_INDEX_NUM] = blk_index;
             writeDisk(disk, &blk_index, sizeof(int), inode_offset + DIRECT_INDEX_NUM * sizeof(int));
         }
@@ -40,12 +40,12 @@ void Inode::appendBlk(std::fstream& disk, SuperBlock& s, int inode_index, int bl
         //如果加完后，第一个或第二个直接索引块用完了，需要分配一个新的索引块
         if (cnt == 127)
         {
-            int blk_index = s.distributeBlk(disk);
+            int blk_index = s.distributeBlk(disk, b_mgr);
             d_addr[DIRECT_INDEX_NUM + index + 1] = blk_index;
             writeDisk(disk, &blk_index, sizeof(int), inode_offset + (DIRECT_INDEX_NUM + index + 1) * sizeof(int));
             if (index) //如果分配的是二级间接索引块，还需要再分配一个一级间接索引块
             {
-                int blk_index_2 = s.distributeBlk(disk);
+                int blk_index_2 = s.distributeBlk(disk, b_mgr);
                 writeDisk(disk, &blk_index_2, sizeof(blk_index_2), blk_index * BYTE_PER_BLOCK);
             }
             //cout << "分配的新索引块是" << dec << blk_index << endl;
@@ -70,14 +70,14 @@ void Inode::appendBlk(std::fstream& disk, SuperBlock& s, int inode_index, int bl
         //如果第一个间接索引块用完了，需要一个新的间接索引块
         if (cnt_1 == 127 && cnt_2 == 127)
         {
-            int blk_index = s.distributeBlk(disk);
+            int blk_index = s.distributeBlk(disk, b_mgr);
             d_addr[9] = blk_index;
             writeDisk(disk, &blk_index, sizeof(int), inode_offset + 9 * sizeof(int));
         }
         //如果间接索引块中的一个直接索引块用完了，需要一个新的直接索引块
         else if (cnt_2 == 127)
         {
-            int blk_index = s.distributeBlk(disk);
+            int blk_index = s.distributeBlk(disk, b_mgr);
             writeDisk(disk, &blk_index, sizeof(int), table_1 * BYTE_PER_BLOCK + (cnt_1 + 1) * sizeof(int));
         }
         return;
@@ -88,7 +88,7 @@ void Inode::appendBlk(std::fstream& disk, SuperBlock& s, int inode_index, int bl
     }
 }
 
-int Inode::BMap(std::fstream& disk, int blkno)
+int Inode::BMap(DiskFile& disk, int blkno)
 {
     int ret = -1;
     if (blkno < DIRECT_INDEX_NUM) // 直接索引
@@ -118,7 +118,7 @@ int Inode::BMap(std::fstream& disk, int blkno)
     return ret;
 }
 
-void Inode::releaseAllBlk(std::fstream& disk, SuperBlock& s)
+void Inode::releaseAllBlk(DiskFile& disk, SuperBlock& s, BufferMgr& b_mgr)
 {
     //首先释放所有数据块
     // 目录一律只占一个数据块(mkdir 只分配一块, 满了也不扩), 它的 d_size 记的是
@@ -130,7 +130,7 @@ void Inode::releaseAllBlk(std::fstream& disk, SuperBlock& s)
         blk_num = 1;
     for (int i = 0; i < blk_num; i++)
     {
-        s.releaseBlk(disk, BMap(disk, i));
+        s.releaseBlk(disk, BMap(disk, i), b_mgr);
     }
     //其次释放所有索引块
     //计算用了几个索引块
@@ -141,11 +141,11 @@ void Inode::releaseAllBlk(std::fstream& disk, SuperBlock& s)
     const int INDEX_PER_TABLE = BYTE_PER_BLOCK / sizeof(int);   // 一个索引块装得下几个块号
     if (blk_num >= DIRECT_INDEX_NUM)
     {
-        s.releaseBlk(disk, d_addr[6]);
+        s.releaseBlk(disk, d_addr[6], b_mgr);
     }
     if (blk_num >= DIRECT_INDEX_NUM + INDEX_PER_TABLE)
     {
-        s.releaseBlk(disk, d_addr[7]);
+        s.releaseBlk(disk, d_addr[7], b_mgr);
     }
     if (blk_num >= FIRST_LEVEL_INDIRECT_INDEX_NUM)
     {
@@ -164,16 +164,16 @@ void Inode::releaseAllBlk(std::fstream& disk, SuperBlock& s)
         int sub_table[INDEX_PER_TABLE];
         for (int i = 0; i < sub_num; i++)
             readDisk(disk, &sub_table[i], sizeof(int), d_addr[8] * BYTE_PER_BLOCK + i * sizeof(int));
-        s.releaseBlk(disk, d_addr[8]);
+        s.releaseBlk(disk, d_addr[8], b_mgr);
         for (int i = 0; i < sub_num; i++)
         {
-            s.releaseBlk(disk, sub_table[i]);
+            s.releaseBlk(disk, sub_table[i], b_mgr);
         }
     }
     // d_addr[9] 那档要 16646 块(约 8.5 MB)才开始用, 4 MB 的盘到不了; 且 appendBlk
     // 分配 d_addr[9] 时没有给它预分配子表, 没有额外的东西要回收
     if (blk_num >= SECOND_LEVEL_INDIRECT_INDEX_NUM)
     {
-        s.releaseBlk(disk, d_addr[9]);
+        s.releaseBlk(disk, d_addr[9], b_mgr);
     }
 }

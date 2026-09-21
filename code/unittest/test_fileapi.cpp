@@ -80,7 +80,7 @@ UT_TEST(fileapi, format_initial_state, "fformat 后当前目录为 / 且只有�
 UT_TEST(fileapi, mkdir_visible_in_ls, "mkdir 建立的目录能在 ls 中看到")
 {
     FsFixture f;
-    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     UT_CHECK_CONTAINS(lsOutput(f), "alpha");
     UT_CHECK_EQ(getCurrentDirSubFileNum(f.disk, f.i_table), 1);
@@ -98,10 +98,10 @@ UT_TEST(fileapi, mkdir_visible_in_ls, "mkdir 建立的目录能在 ls 中看到"
 UT_TEST(fileapi, duplicate_mkdir_rejected, "重名 mkdir 被拒绝, 不产生第二个目录项")
 {
     FsFixture f;
-    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     SuperBlockMirror after_first = superBlockOf(f.disk, f.sblk);
 
-    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     UT_CHECK_EQ(countOccurrences(lsOutput(f), "alpha"), 1);
     UT_CHECK_EQ(getCurrentDirSubFileNum(f.disk, f.i_table), 1);
@@ -114,7 +114,7 @@ UT_TEST(fileapi, duplicate_mkdir_rejected, "重名 mkdir 被拒绝, 不产生第
 UT_TEST(fileapi, cd_enters_and_leaves, "cd 进入子目录, cd .. 返回父目录")
 {
     FsFixture f;
-    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     UT_CHECK_EQ(f.i_table.getCurrentFullPath(f.disk), std::string("/"));
 
@@ -132,7 +132,7 @@ UT_TEST(fileapi, cd_enters_and_leaves, "cd 进入子目录, cd .. 返回父目�
 UT_TEST(fileapi, cd_dot_is_noop, "cd . 不改变当前目录")
 {
     FsFixture f;
-    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     cd("alpha", f.disk, f.sblk, f.i_table, f.f_table);
 
     cd(".", f.disk, f.sblk, f.i_table, f.f_table);
@@ -142,7 +142,7 @@ UT_TEST(fileapi, cd_dot_is_noop, "cd . 不改变当前目录")
 UT_TEST(fileapi, cd_missing_dir_has_no_side_effect, "cd 不存在的目录不改变当前目录")
 {
     FsFixture f;
-    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     const int before_dir = f.i_table.getCurrentDir();
     const int before_size = f.i_table.size();
@@ -166,7 +166,7 @@ UT_TEST(fileapi, cd_root_parent_is_noop, "在根目录 cd .. 应停住不动")
 UT_TEST(fileapi, fcreat_and_duplicate, "fcreat 建立文件, 重名被拒绝")
 {
     FsFixture f;
-    fcreat("alpha", 100, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("alpha", 100, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     UT_CHECK_CONTAINS(lsOutput(f), "alpha");
 
     InodeMirror m = inodeOf(f.disk, subInodeAt(f, 0));
@@ -175,7 +175,7 @@ UT_TEST(fileapi, fcreat_and_duplicate, "fcreat 建立文件, 重名被拒绝")
     UT_CHECK_MSG(m.d_addr[0] >= FILE_BLOCK_START, "100 字节应分配到 1 个数据盘块");
 
     SuperBlockMirror before = superBlockOf(f.disk, f.sblk);
-    fcreat("alpha", 100, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("alpha", 100, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     UT_CHECK_EQ(countOccurrences(lsOutput(f), "alpha"), 1);
     SuperBlockMirror after = superBlockOf(f.disk, f.sblk);
@@ -185,16 +185,16 @@ UT_TEST(fileapi, fcreat_and_duplicate, "fcreat 建立文件, 重名被拒绝")
 UT_TEST(fileapi, open_close_table_accounting, "fopen/fclose 正确增减打开文件表")
 {
     FsFixture f;
-    fcreat("alpha", 10, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("alpha", 10, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     UT_CHECK_EQ(f.f_table.size(), 1);   // 只有根目录
 
-    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     UT_CHECK_EQ(f.f_table.size(), 2);
     UT_CHECK_EQ(f.i_table.size(), 2);
     UT_CHECK_EQ(f.f_table.getOffset(subInodeAt(f, 0)), 0);   // 新打开的文件指针归零
 
-    fclose("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    fclose("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     UT_CHECK_EQ(f.f_table.size(), 1);
     UT_CHECK_EQ(f.i_table.size(), 1);
 }
@@ -202,14 +202,14 @@ UT_TEST(fileapi, open_close_table_accounting, "fopen/fclose 正确增减打开�
 UT_TEST(fileapi, repeated_open_and_close_are_safe, "重复 fopen/fclose 不重复计数也不出错")
 {
     FsFixture f;
-    fcreat("alpha", 10, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("alpha", 10, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
-    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table);
-    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table);   // 已打开, 应被忽略
+    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
+    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);   // 已打开, 应被忽略
     UT_CHECK_EQ(f.f_table.size(), 2);
 
-    fclose("alpha", f.disk, f.sblk, f.i_table, f.f_table);
-    fclose("alpha", f.disk, f.sblk, f.i_table, f.f_table);  // 未打开, 应被忽略
+    fclose("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
+    fclose("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);  // 未打开, 应被忽略
     UT_CHECK_EQ(f.f_table.size(), 1);
     UT_CHECK_EQ(f.i_table.size(), 1);
 }
@@ -218,8 +218,8 @@ UT_TEST(fileapi, write_then_read_roundtrip, "fwrite/fread 逐字节往返一致"
 {
     FsFixture f;
     const std::string content = pattern(100);
-    fcreat("alpha", 100, f.disk, f.sblk, f.i_table, f.f_table);
-    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("alpha", 100, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
+    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     std::string buf = content;
     fwrite("alpha", buf, static_cast<int>(buf.size()),
@@ -237,8 +237,8 @@ UT_TEST(fileapi, fseek_then_read_from_offset, "flseek 后从指定位置开始�
 {
     FsFixture f;
     const std::string content = pattern(100);
-    fcreat("alpha", 100, f.disk, f.sblk, f.i_table, f.f_table);
-    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("alpha", 100, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
+    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     std::string buf = content;
     fwrite("alpha", buf, static_cast<int>(buf.size()),
@@ -252,8 +252,8 @@ UT_TEST(fileapi, fseek_then_read_from_offset, "flseek 后从指定位置开始�
 UT_TEST(fileapi, fseek_beyond_end_clamps, "flseek 越界应定位到文件尾")
 {
     FsFixture f;
-    fcreat("alpha", 100, f.disk, f.sblk, f.i_table, f.f_table);
-    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("alpha", 100, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
+    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     UT_CHECK_EQ(flseek("alpha", 9999, f.disk, f.sblk, f.i_table, f.f_table), 100);
     // 负偏移表示"查询当前指针", 不应移动
@@ -263,11 +263,11 @@ UT_TEST(fileapi, fseek_beyond_end_clamps, "flseek 越界应定位到文件尾")
 UT_TEST(fileapi, fdelete_file_recycles_inode, "fdelete 删除文件后 ls 不可见且 inode 被回收")
 {
     FsFixture f;
-    fcreat("alpha", 10, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("alpha", 10, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     const int alpha_inode = subInodeAt(f, 0);
 
     SuperBlockMirror before = superBlockOf(f.disk, f.sblk);
-    fdelete("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    fdelete("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     UT_CHECK_NOT_CONTAINS(lsOutput(f), "alpha");
     UT_CHECK_EQ(getCurrentDirSubFileNum(f.disk, f.i_table), 0);
@@ -281,10 +281,10 @@ UT_TEST(fileapi, fdelete_file_recycles_inode, "fdelete 删除文件后 ls 不可
 UT_TEST(fileapi, fdelete_refuses_open_file, "fdelete 拒绝删除未关闭的文件")
 {
     FsFixture f;
-    fcreat("alpha", 10, f.disk, f.sblk, f.i_table, f.f_table);
-    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("alpha", 10, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
+    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
-    fdelete("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    fdelete("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     UT_CHECK_CONTAINS(lsOutput(f), "alpha");   // 仍然在
     UT_CHECK_EQ(getCurrentDirSubFileNum(f.disk, f.i_table), 1);
@@ -295,19 +295,19 @@ UT_TEST(fileapi, delete_all_then_recreate, "清空目录后仍能重新建文件
     FsFixture f;
     for (int i = 0; i < 3; i++)
         fcreat(std::string("f") + static_cast<char>('a' + i), 50,
-               f.disk, f.sblk, f.i_table, f.f_table);
+               f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     UT_CHECK_EQ(getCurrentDirSubFileNum(f.disk, f.i_table), 3);
 
     for (int i = 0; i < 3; i++)
         fdelete(std::string("f") + static_cast<char>('a' + i),
-                f.disk, f.sblk, f.i_table, f.f_table);
+                f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     UT_CHECK_EQ(getCurrentDirSubFileNum(f.disk, f.i_table), 0);
     UT_CHECK_NOT_CONTAINS(lsOutput(f), "fa");
 
     // 回收过的 inode 应能被再次分配
-    fcreat("fb", 50, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("fb", 50, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     UT_CHECK_CONTAINS(lsOutput(f), "fb");
 }
 
@@ -319,15 +319,15 @@ UT_TEST(fileapi, delete_all_then_recreate, "清空目录后仍能重新建文件
 UT_TEST(fileapi, fdelete_nonempty_dir_keeps_entry, "fdelete 非空目录应保留目录项")
 {
     FsFixture f;
-    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     cd("alpha", f.disk, f.sblk, f.i_table, f.f_table);
-    fcreat("beta", 10, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("beta", 10, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     cd("..", f.disk, f.sblk, f.i_table, f.f_table);
 
     UT_CHECK_CONTAINS(lsOutput(f), "alpha");
     UT_CHECK_EQ(inodeOf(f.disk, currentDirInode(f)).d_size, DIR_ENTRY_SIZE);
 
-    fdelete("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    fdelete("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     // 正确行为: 删不掉, 目录项和父目录大小都应保持不变
     UT_CHECK_MSG(getCurrentDirSubFileNum(f.disk, f.i_table) == 1,
@@ -345,16 +345,16 @@ UT_TEST(fileapi, fdelete_nonempty_dir_keeps_entry, "fdelete 非空目录应保�
 UT_TEST(fileapi, fdelete_empty_dir_frees_block, "fdelete 空目录应回收其数据块")
 {
     FsFixture f;
-    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    mkdir("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     const int alpha_inode = subInodeAt(f, 0);
     const int blk = inodeOf(f.disk, alpha_inode).d_addr[0];
     UT_CHECK_MSG(blk >= FILE_BLOCK_START, "新建目录应已分配一个数据块");
 
-    fdelete("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    fdelete("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     // 该块回到空闲链顶端, 于是下一次分配正好拿回它
-    UT_CHECK_EQ(f.sblk.distributeBlk(f.disk), blk);
+    UT_CHECK_EQ(f.sblk.distributeBlk(f.disk, f.b_mgr), blk);
 }
 
 // fdelete 只应受"要删的那个文件是否打开"影响
@@ -365,11 +365,11 @@ UT_TEST(fileapi, fdelete_empty_dir_frees_block, "fdelete 空目录应回收其�
 UT_TEST(fileapi, fdelete_ignores_unrelated_open_file, "删除已关闭文件不应受其他打开文件影响")
 {
     FsFixture f;
-    fcreat("beta", 10, f.disk, f.sblk, f.i_table, f.f_table);
-    fcreat("alpha", 10, f.disk, f.sblk, f.i_table, f.f_table);
-    fopen("beta", f.disk, f.sblk, f.i_table, f.f_table);   // 打开的是 beta
+    fcreat("beta", 10, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
+    fcreat("alpha", 10, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
+    fopen("beta", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);   // 打开的是 beta
 
-    fdelete("alpha", f.disk, f.sblk, f.i_table, f.f_table);
+    fdelete("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     // alpha 本身是关着的, 应当被正常删除
     UT_CHECK_NOT_CONTAINS(lsOutput(f), "alpha");
@@ -410,7 +410,7 @@ UT_TEST(fileapi, size_argument_must_be_numeric, "fcreat 的大小参数必须是
 UT_TEST(fileapi, zero_size_file_still_gets_first_block, "0 字节文件仍应有首块, 且 d_size 为 0")
 {
     FsFixture f;
-    fcreat("empty", 0, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("empty", 0, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     const int ino = subInodeAt(f, 0);
     const InodeMirror m = inodeOf(f.disk, ino);
@@ -423,7 +423,7 @@ UT_TEST(fileapi, zero_size_file_still_gets_first_block, "0 字节文件仍应有
 
     // 打开路径要读它的首块, 所以 0 字节的文件也必须能正常打开, 指针停在 0
     const int before = f.f_table.size();
-    fopen("empty", f.disk, f.sblk, f.i_table, f.f_table);
+    fopen("empty", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     UT_CHECK_MSG(f.f_table.size() == before + 1, "0 字节的文件无法打开");
     UT_CHECK_EQ(f.f_table.getOffset(ino), 0);
 }

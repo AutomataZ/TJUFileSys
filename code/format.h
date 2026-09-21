@@ -1,6 +1,6 @@
 // 在第一次使用文件系统时，需要对整个磁盘进行格式化
 #pragma once
-#include <fstream>
+class DiskFile;
 #include "buffer.h"
 #include "openfile.h"
 #include "define.h"
@@ -13,4 +13,4 @@
     新建一个根目录文件 / 
     写完磁盘要打开根目录文件 / 
 */
-void diskFormat(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);
+void diskFormat(DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);

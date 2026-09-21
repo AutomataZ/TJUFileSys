@@ -1,5 +1,6 @@
 #pragma once
 #include "define.h"
+class DiskFile;
 
 /*
     缓存块
@@ -45,6 +46,14 @@ public:
     Buffer front();
     void update(int blkno);
     Buffer* find(int blkno);
+
+    /// @brief 把某个盘块的缓存从队列里摘掉, 不回写
+    /// @param blkno 要摘掉的盘块号; 队列里没有这个块就什么都不做
+    void remove(int blkno);
+
+    /// @brief 把队列里所有脏块写回磁盘, 缓存照留 (与 clear 的区别就在这里)
+    /// @param disk 用来模拟磁盘的文件
+    void flush(DiskFile& disk);
 #ifdef DEBUG_ENV
     void print();
     /// @brief 按 LRU 顺序单行列出队列中每个缓存块
@@ -65,9 +74,9 @@ public:
     /// @param disk 用来模拟磁盘的文件
     /// @param blkno 要与这个物理块号相关联
     /// @return 分配到的缓存的地址
-    Buffer* getBlk(std::fstream& disk,int blkno);
+    Buffer* getBlk(DiskFile& disk,int blkno);
 
-    Buffer* Bread(std::fstream& disk, int blkno);
+    Buffer* Bread(DiskFile& disk, int blkno);
 
     /// @brief 向缓存中写入内容
     /// @param disk 用来模拟磁盘的文件
@@ -76,8 +85,22 @@ public:
     /// @param offset 块内的起始位置
     /// @param size 要写入的字节数，保证不会写超过块大小的内容
     /// @return 返回指向这个块的指针
-    Buffer* Bwrite(std::fstream& disk, int blkno, std::string& buffer, int offset, int size);
+    Buffer* Bwrite(DiskFile& disk, int blkno, std::string& buffer, int offset, int size);
 
-    void clear(std::fstream& disk);
+    /// @brief 作废某个盘块的缓存副本
+    ///
+    /// 盘块易主(被回收进空闲链, 或从空闲链里分配出去)时调用。缓存里那份是旧主人的
+    /// 内容, 留着它, 它迟早在淘汰或 clear 时被写回磁盘, 盖掉新主人刚写上去的东西。
+    /// 这里直接丢弃不回写: 块已经不属于任何人了, 它的内容没有保留的价值。
+    /// @param blkno 易主的盘块号
+    void remove(int blkno);
+
+    /// @brief 把队列里所有脏块写回磁盘, 缓存不清空
+    ///
+    /// 提交点用: 缓存里的内容还在往后延, 但这一刻必须保证磁盘上那份是全的。
+    /// @param disk 用来模拟磁盘的文件
+    void flush(DiskFile& disk);
+
+    void clear(DiskFile& disk);
 
 };

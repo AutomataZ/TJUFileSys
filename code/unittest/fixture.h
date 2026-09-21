@@ -2,7 +2,7 @@
 #include "define.h"
 #include "shell.h"
 #include "mirror.h"
-#include <fstream>
+#include "wirteDisk/wirteDisk.h"
 #include <sstream>
 #include <iostream>
 #include <cstdlib>
@@ -18,19 +18,19 @@ inline const char* ut_image_path()
     return "unittest.img";
 }
 
-// std::fstream 无法直接设定文件大小, 用 seekp + put 撑到 4MB,
-// 免去外部 truncate 命令的依赖
+// 建立(或清空)4MB 的测试镜像
 inline void createImageFile()
 {
-    std::ofstream create(ut_image_path(), std::ios::binary | std::ios::trunc);
-    create.seekp(DISK_SIZE - 1);
-    create.put('\0');
-    create.close();
+    if (!DiskFile::create(ut_image_path(), DISK_SIZE))
+    {
+        std::cerr << "无法建立测试镜像 " << ut_image_path() << std::endl;
+        std::exit(2);
+    }
 }
 
 class FsFixture {
 public:
-    std::fstream disk;
+    DiskFile disk;
     SuperBlock sblk;
     MemInodeTable i_table;
     OpenFileTable f_table;
@@ -39,8 +39,7 @@ public:
     explicit FsFixture(bool do_format = true)
     {
         createImageFile();
-        disk.open(ut_image_path(), std::ios::in | std::ios::out | std::ios::binary);
-        if (!disk.is_open())
+        if (!disk.open(ut_image_path()))
         {
             std::cerr << "无法打开测试镜像 " << ut_image_path() << std::endl;
             std::exit(2);
@@ -51,8 +50,7 @@ public:
 
     ~FsFixture()
     {
-        if (disk.is_open())
-            disk.close();
+        disk.close();
     }
 
     // 磁盘流不可复制, 固件对象也不应被复制
@@ -83,7 +81,7 @@ private:
 // ---- 常用断言辅助 ----
 
 // 读磁盘上某个 inode 的镜像
-inline InodeMirror inodeOf(std::fstream& disk, int inode_index)
+inline InodeMirror inodeOf(DiskFile& disk, int inode_index)
 {
     InodeMirror m;
     readInodeMirror(disk, inode_index, m);
@@ -91,7 +89,7 @@ inline InodeMirror inodeOf(std::fstream& disk, int inode_index)
 }
 
 // 读当前内存 superblock 的镜像
-inline SuperBlockMirror superBlockOf(std::fstream& disk, SuperBlock& sblk)
+inline SuperBlockMirror superBlockOf(DiskFile& disk, SuperBlock& sblk)
 {
     SuperBlockMirror m;
     snapshotSuperBlock(disk, sblk, m);
@@ -103,7 +101,7 @@ inline SuperBlockMirror superBlockOf(std::fstream& disk, SuperBlock& sblk)
 // 块号是绝对块号, 换算成字节偏移就是 blkno * BYTE_PER_BLOCK 这一个式子 ——
 // 与 define.h 中 FILE_AREA_OFFSET 处的说明一致, 那里也是全系统唯一的换算口径。
 
-inline std::string readBlockBytes(std::fstream& disk, int blkno, int n)
+inline std::string readBlockBytes(DiskFile& disk, int blkno, int n)
 {
     std::string s(n, '\0');
     readDisk(disk, &s[0], n, blkno * BYTE_PER_BLOCK);

@@ -52,7 +52,7 @@ int dirEntryInode(FsFixture& f, int k)
 }
 
 // 数据区每一块的快照, 用于事后比对哪些盘块被写脏。直接读镜像文件, 绕开缓存。
-std::vector<std::string> dumpDataArea(std::fstream& disk)
+std::vector<std::string> dumpDataArea(DiskFile& disk)
 {
     std::vector<std::string> v;
     v.reserve(FILE_BLOCK_NUM);
@@ -65,9 +65,9 @@ std::vector<std::string> dumpDataArea(std::fstream& disk)
 std::string writeThenRead(FsFixture& f, const std::string& name, int decl_size,
                           int offset, int size, int* ptr_after = nullptr)
 {
-    fcreat(name, decl_size, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat(name, decl_size, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     const int ino = firstInode(f);
-    fopen(name, f.disk, f.sblk, f.i_table, f.f_table);
+    fopen(name, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     if (offset > 0)
         flseek(name, offset, f.disk, f.sblk, f.i_table, f.f_table);
 
@@ -124,9 +124,9 @@ UT_TEST(boundary, write_exactly_to_block_end, "恰好写到块尾不出错")
 UT_TEST(boundary, in_place_overwrite, "原地覆盖写后读到的是新内容")
 {
     FsFixture f;
-    fcreat("t", 1000, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("t", 1000, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     const int ino = firstInode(f);
-    fopen("t", f.disk, f.sblk, f.i_table, f.f_table);
+    fopen("t", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     std::string first = pattern(300);
     fwrite("t", first, 300, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
@@ -150,7 +150,7 @@ UT_TEST(boundary, deep_directory_tree, "五层目录逐级进出")
     std::string path = "/";
     for (int i = 0; i < 5; i++)
     {
-        mkdir(names[i], f.disk, f.sblk, f.i_table, f.f_table);
+        mkdir(names[i], f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
         cd(names[i], f.disk, f.sblk, f.i_table, f.f_table);
         path += std::string(names[i]) + "/";
         UT_CHECK_EQ(f.i_table.getCurrentFullPath(f.disk), path);
@@ -158,7 +158,7 @@ UT_TEST(boundary, deep_directory_tree, "五层目录逐级进出")
     }
 
     // 在最深处建文件, 确认不会串到上层
-    fcreat("deep", 10, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("deep", 10, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     UT_CHECK_EQ(getCurrentDirSubFileNum(f.disk, f.i_table), 1);
 
     for (int i = 4; i >= 0; i--)
@@ -176,17 +176,17 @@ UT_TEST(boundary, deep_directory_tree, "五层目录逐级进出")
 UT_TEST(boundary, sibling_directories_are_isolated, "同级目录的内容互不干扰")
 {
     FsFixture f;
-    mkdir("left", f.disk, f.sblk, f.i_table, f.f_table);
-    mkdir("right", f.disk, f.sblk, f.i_table, f.f_table);
+    mkdir("left", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
+    mkdir("right", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     cd("left", f.disk, f.sblk, f.i_table, f.f_table);
-    fcreat("only_left", 50, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("only_left", 50, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     cd("..", f.disk, f.sblk, f.i_table, f.f_table);
 
     cd("right", f.disk, f.sblk, f.i_table, f.f_table);
     UT_CHECK_EQ(getCurrentDirSubFileNum(f.disk, f.i_table), 0);
 
-    fcreat("only_right", 50, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("only_right", 50, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     UT_CHECK_EQ(getCurrentDirSubFileNum(f.disk, f.i_table), 1);
 }
 
@@ -196,10 +196,10 @@ UT_TEST(boundary, multiple_open_files_independent, "多文件同时打开时读�
 {
     FsFixture f;
     const int n = 400;
-    fcreat("alpha", n, f.disk, f.sblk, f.i_table, f.f_table);
-    fcreat("beta", n, f.disk, f.sblk, f.i_table, f.f_table);
-    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table);
-    fopen("beta", f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("alpha", n, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
+    fcreat("beta", n, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
+    fopen("alpha", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
+    fopen("beta", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     std::string a(n, 'A');
     std::string b(n, 'B');
@@ -236,18 +236,18 @@ UT_TEST(boundary, data_integrity_survives_delete, "删除其中一个文件不�
 {
     FsFixture f;
     const int n = 300;
-    fcreat("keep", n, f.disk, f.sblk, f.i_table, f.f_table);
-    fcreat("drop", n, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("keep", n, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
+    fcreat("drop", n, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
-    fopen("keep", f.disk, f.sblk, f.i_table, f.f_table);
+    fopen("keep", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     std::string content = pattern(n);
     fwrite("keep", content, n, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
-    fclose("keep", f.disk, f.sblk, f.i_table, f.f_table);
+    fclose("keep", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     f.b_mgr.clear(f.disk);   // 确保落盘
 
-    fdelete("drop", f.disk, f.sblk, f.i_table, f.f_table);
+    fdelete("drop", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
-    fopen("keep", f.disk, f.sblk, f.i_table, f.f_table);
+    fopen("keep", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     flseek("keep", 0, f.disk, f.sblk, f.i_table, f.f_table);
     UT_CHECK_EQ(fread("keep", n, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr), content);
 }
@@ -264,13 +264,13 @@ UT_TEST(boundary, data_integrity_survives_delete, "删除其中一个文件不�
 // 分支保持一致。
 UT_TEST(boundary, creat_size_multiple_of_block, "fcreat 申报 512 的倍数时 d_size 应等于申报值")
 {
-    // 4096 是演示流程里真正用到的申报值 (fcreat("reports.md", 4*1024))
+    // 4096 是演示流程里真正用到的申报值 (fcreat("reports.md", 4*1024, f.b_mgr))
     const int sizes[] = {512, 1024, 1536, 4096};
     for (unsigned k = 0; k < sizeof(sizes) / sizeof(sizes[0]); k++)
     {
         FsFixture f;
         const int n = sizes[k];
-        fcreat("t", n, f.disk, f.sblk, f.i_table, f.f_table);
+        fcreat("t", n, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
         UT_CHECK_MSG(inodeOf(f.disk, firstInode(f)).d_size == n,
                      "fcreat 申报 " + ut::to_str(n) + " 字节, d_size 实际为 " +
                      ut::to_str(inodeOf(f.disk, firstInode(f)).d_size));
@@ -292,9 +292,9 @@ UT_TEST(boundary, writing_one_file_does_not_touch_its_neighbour,
         "写满一个文件不得触碰相邻文件的盘块")
 {
     FsFixture f;
-    fcreat("a", 4096, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("a", 4096, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     const int a_ino = firstInode(f);
-    fcreat("b", 4096, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("b", 4096, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
     const int b_ino = dirEntryInode(f, 1);
 
     const int inos[2] = {a_ino, b_ino};
@@ -305,11 +305,11 @@ UT_TEST(boundary, writing_one_file_does_not_touch_its_neighbour,
     for (int k = 1; k >= 0; k--)   // 先写 b 再写 a, 让 a 的写入覆盖在最后
     {
         const char* name = k == 0 ? "a" : "b";
-        fopen(name, f.disk, f.sblk, f.i_table, f.f_table);
+        fopen(name, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
         std::string buf(4096, mine[k]);
         fwrite(name, buf, buf.size(), f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
-        fclose(name, f.disk, f.sblk, f.i_table, f.f_table);
-        f.b_mgr.clear(f.disk);   // 延迟写落盘, 之后直接从磁盘读
+        fclose(name, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
+        f.b_mgr.clear(f.disk);   // 内容已在 fclose 的提交点落盘, 这里只把缓存收干净
     }
 
     for (int k = 0; k < 2; k++)
@@ -409,7 +409,7 @@ UT_TEST(boundary, declared_size_fits_allocated_blocks,
     {
         FsFixture f;
         const int n = sizes[k];
-        fcreat("t", n, f.disk, f.sblk, f.i_table, f.f_table);
+        fcreat("t", n, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
         const int ino = firstInode(f);
         Inode inode;
@@ -435,10 +435,10 @@ UT_TEST(boundary, declared_size_fits_allocated_blocks,
         f.b_mgr.clear(f.disk);
         std::vector<std::string> before = dumpDataArea(f.disk);
 
-        fopen("t", f.disk, f.sblk, f.i_table, f.f_table);
+        fopen("t", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
         std::string buf(n, 'Z');
         fwrite("t", buf, buf.size(), f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
-        fclose("t", f.disk, f.sblk, f.i_table, f.f_table);
+        fclose("t", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
         f.b_mgr.clear(f.disk);
 
         std::vector<std::string> after = dumpDataArea(f.disk);
@@ -484,13 +484,13 @@ UT_TEST(boundary, grow_beyond_declared_size,
         const int wn = cases[k].write_n;
         const std::string tag = "申报 " + ut::to_str(decl) + " 字节写 " + ut::to_str(wn) + " 字节";
 
-        fcreat("t", decl, f.disk, f.sblk, f.i_table, f.f_table);
+        fcreat("t", decl, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
         f.b_mgr.clear(f.disk);
 
         std::vector<std::string> before = dumpDataArea(f.disk);
 
         std::string w = pattern(wn);
-        fopen("t", f.disk, f.sblk, f.i_table, f.f_table);
+        fopen("t", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
         fwrite("t", w, wn, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
         f.b_mgr.clear(f.disk);
 
@@ -506,7 +506,7 @@ UT_TEST(boundary, grow_beyond_declared_size,
         std::string got = fread("t", wn, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
         UT_CHECK_MSG(got == w, tag + ": 扩容后读回的内容与写入不一致 (读到 " +
                                ut::to_str(got.size()) + " 字节)");
-        fclose("t", f.disk, f.sblk, f.i_table, f.f_table);
+        fclose("t", f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
         // 索引槽位必须连续且在数据区内 —— 跳槽位意味着中间那块已经找不回来了
         const int ino = firstInode(f);
@@ -570,7 +570,7 @@ UT_TEST(boundary, creat_zero_size_leaves_inode_area_intact,
     const int created = sb.s_inode[sb.s_ninode - 1];
 
     const InodeMirror parent_before = inodeOf(f.disk, parent);
-    fcreat("t", 0, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("t", 0, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     // 新建的文件要有合法的首块 —— 它的目录项就写在首块开头, 没有块就等于没有名字
     const InodeMirror file_after = inodeOf(f.disk, created);
@@ -604,6 +604,53 @@ UT_TEST(boundary, creat_zero_size_leaves_inode_area_intact,
                  ut::to_str(parent_after.d_addr[0]));
 }
 
+// fcreat 之后, 盘上那份空闲链不能还列着已经分出去的块
+//
+// 掉电重启后, 盘上 superblock 里的空闲链是说明"哪些块还空着"的唯一依据。它要是
+// 仍然把某个已经写进 inode 的块当成空闲, 重启后这个块会被再分一次 —— 两个文件
+// 共用同一批盘块, 内容互相覆盖, 而且是所有掉电后果里唯一修不回来的那种。
+UT_TEST(boundary, on_disk_free_list_excludes_allocated_blocks,
+        "盘上的空闲链不得包含已经分配给文件的盘块")
+{
+    FsFixture f;
+    fcreat("a", 0, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);      // 0 字节也占一块
+    fcreat("b", 4096, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);   // 9 块, 还挂了一级索引块
+
+    // 盘上那份 superblock (磁盘偏移 0 处的 1024 字节)
+    SuperBlockMirror on_disk;
+    readDisk(f.disk, &on_disk, sizeof(SuperBlockMirror), 0);
+
+    // 盘上每个已占用 inode 名下的盘块: 数据块 + 已经挂上去的索引块
+    std::set<int> used;
+    for (int i = 0; i < INODE_NUM; i++)
+    {
+        InodeMirror m = inodeOf(f.disk, i);
+        if (m.d_mode == 0)
+            continue;
+
+        for (int j = DIRECT_INDEX_NUM; j < 10; j++)
+            if (m.d_addr[j] >= FILE_BLOCK_START)
+                used.insert(m.d_addr[j]);
+
+        Inode inode;
+        readDisk(f.disk, &inode, sizeof(Inode), INODE_AREA_OFFSET + i * sizeof(Inode));
+        int nblk = (m.d_mode == FILE_MODE::dir_file) ? 1 : blocksForFileContent(m.d_size);
+        if (nblk == 0)
+            nblk = 1;
+        for (int b = 0; b < nblk; b++)
+        {
+            const int blk = inode.BMap(f.disk, b);
+            if (blk >= FILE_BLOCK_START)
+                used.insert(blk);
+        }
+    }
+
+    for (int i = 0; i < on_disk.s_nfree; i++)
+        UT_CHECK_MSG(used.count(on_disk.s_free[i]) == 0,
+                     "盘上的空闲链仍把块 " + ut::to_str(on_disk.s_free[i]) +
+                     " 当作空闲, 但它已经写进了某个 inode");
+}
+
 // 盘满时 fcreat 应整体失败, 不留下半个文件
 //
 // newFile 的顺序是「先登记目录项、再分配盘块」: 目录项先写进父目录, 之后才走分配
@@ -626,7 +673,7 @@ UT_TEST_KNOWN_BUG(boundary, creat_on_full_disk_leaves_no_trace,
                   "盘满时 fcreat 应整体失败, 不留下半个文件")
 {
     FsFixture f;
-    while (f.sblk.distributeBlk(f.disk) != -1)
+    while (f.sblk.distributeBlk(f.disk, f.b_mgr) != -1)
         ;   // 抽干空闲块表
 
     const int parent = currentDirInode(f);
@@ -640,7 +687,7 @@ UT_TEST_KNOWN_BUG(boundary, creat_on_full_disk_leaves_no_trace,
         ls_before = cap.str();
     }
 
-    fcreat("t", 10, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("t", 10, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     // 一个盘块都分配不到, 就该整体失败 —— 父目录不该多出一个子文件项
     UT_CHECK_MSG(getCurrentDirSubFileNum(f.disk, f.i_table) == subs_before,
@@ -711,7 +758,7 @@ UT_TEST_FULL(boundary, large_file_index_structure, "20 万字节文件的 6-2-2 
     SuperBlockMirror before = superBlockOf(f.disk, f.sblk);
     const int initial_top = before.s_free[before.s_nfree - 1];
 
-    fcreat("big", n, f.disk, f.sblk, f.i_table, f.f_table);
+    fcreat("big", n, f.disk, f.sblk, f.i_table, f.f_table, f.b_mgr);
 
     // 从磁盘重新读入 inode, 确保断言的是真正落盘的结果
     const int ino_index = firstInode(f);

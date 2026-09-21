@@ -14,7 +14,7 @@
 
 using namespace std;
 
-void Shell::init(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table)
+void Shell::init(DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table)
 {
     // 读入磁盘的前1024字节作为superblock结构
     readDisk(disk, &sblk, sizeof(SuperBlock), 0);
@@ -49,7 +49,7 @@ void Shell::init(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, O
 }
 
 //当前目录对应的物理块号
-int getCurrentBlk(std::fstream& disk, MemInodeTable& i_table)
+int getCurrentBlk(DiskFile& disk, MemInodeTable& i_table)
 {
     int index = i_table.inode[i_table.getCurrentDir()].i_number;
     Inode inode;
@@ -57,7 +57,7 @@ int getCurrentBlk(std::fstream& disk, MemInodeTable& i_table)
     return inode.BMap(disk, 0);
 }
 
-int getCurrentDirSubFileNum(std::fstream& disk, MemInodeTable& i_table)
+int getCurrentDirSubFileNum(DiskFile& disk, MemInodeTable& i_table)
 {
     int index = i_table.inode[i_table.getCurrentDir()].i_number;
     Inode inode;
@@ -65,14 +65,14 @@ int getCurrentDirSubFileNum(std::fstream& disk, MemInodeTable& i_table)
     return inode.getSize() / 2;
 }
 
-int getFileModeByInodeIndex(std::fstream& disk, int index)
+int getFileModeByInodeIndex(DiskFile& disk, int index)
 {
     Inode inode;
     readDisk(disk, &inode, sizeof(Inode), INODE_AREA_OFFSET + index * sizeof(Inode));
     return inode.getMode();
 }
 
-string getFileNameByInodeIndex(std::fstream& disk, int index)
+string getFileNameByInodeIndex(DiskFile& disk, int index)
 {
     Inode inode;
     readDisk(disk, &inode, sizeof(Inode), INODE_AREA_OFFSET + index * sizeof(Inode));
@@ -82,7 +82,7 @@ string getFileNameByInodeIndex(std::fstream& disk, int index)
     return dir.getFileName();
 }
 
-void newFile(int mode, string name, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& t_table, int size)
+void newFile(int mode, string name, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& t_table, BufferMgr& b_mgr, int size)
 {
     // size 只在 normal_file 分支参与分配。负数会让分配循环算出负的盘块数,
     // 并把 d_size 一并推成负数, 在这里直接拒绝
@@ -116,20 +116,24 @@ void newFile(int mode, string name, std::fstream& disk, SuperBlock& sblk, MemIno
     Inode new_inode;
     int16_t inode_index = sblk.distributeInode(disk);
 
-    // 在当前目录下储存子文件的 inode
-    writeDisk(disk, &inode_index, sizeof(int16_t), file_content_offset + sub_file_num * sizeof(int16_t));
-    int c_inode_index = i_table.inode[i_table.getCurrentDir()].i_number;
-    Inode c_inode;
-    readDisk(disk, &c_inode, sizeof(Inode), INODE_AREA_OFFSET + c_inode_index * sizeof(Inode));
-    c_inode.addSubDirSize();
-    writeDisk(disk, &c_inode, sizeof(Inode), INODE_AREA_OFFSET + c_inode_index * sizeof(Inode));
+    // 分配之前先把 inode 体擦干净。这个 inode 可能是从别的文件回收来的, 盘上的体里
+    // 还留着上一个主人的 d_size 与 d_addr —— 而它的盘块此时已经回到空闲链上了。
+    // 不擦的话, 下面那次同步一旦落盘, 盘上就出现"一个 inode 声称有 N 字节, 而那些
+    // 字节所在的盘块正被空闲链列着待分配"的状态。擦成"零字节、没有块"之后, 崩溃
+    // 最坏是白占一个 inode 号, 不会有任何一块被两个主人同时指着
+    if (inode_index >= 0)
+    {
+        Inode blank;
+        blank.setMode(mode);
+        writeDisk(disk, &blank, sizeof(Inode), INODE_AREA_OFFSET + inode_index * sizeof(Inode));
+    }
 
     if (mode == FILE_MODE::dir_file)
     {
         // 申请一个空闲盘块
-        int blk_index = sblk.distributeBlk(disk);
+        int blk_index = sblk.distributeBlk(disk, b_mgr);
         // 将分配到的空闲盘块关联到分配到的inode
-        new_inode.appendBlk(disk, sblk, inode_index, blk_index);
+        new_inode.appendBlk(disk, sblk, inode_index, blk_index, b_mgr);
         new_inode.setMode(mode);
     }
     else if (mode == FILE_MODE::normal_file)
@@ -144,8 +148,8 @@ void newFile(int mode, string name, std::fstream& disk, SuperBlock& sblk, MemIno
 
         for (int i = 0; i < blk_num; i++)
         {
-            int blk_index = sblk.distributeBlk(disk);
-            new_inode.appendBlk(disk, sblk, inode_index, blk_index);
+            int blk_index = sblk.distributeBlk(disk, b_mgr);
+            new_inode.appendBlk(disk, sblk, inode_index, blk_index, b_mgr);
             // 加完这一块之后 d_size 该是多少: 中间各块填满(装下 B 块的文件是
             // B*512 - 16 字节, 每块开头那 16 字节是目录项, 不装内容), 最后一块
             // 收在申报的 size 上。changeSize 是增量, 所以这里递推地补差值。
@@ -154,15 +158,41 @@ void newFile(int mode, string name, std::fstream& disk, SuperBlock& sblk, MemIno
         }
         new_inode.setMode(mode);
     }
-    // 将inode内容写入磁盘
+
+    // 提交点: 先把"这个 inode 和这些盘块已经有主了"落到设备上。空闲 inode 表与空闲
+    // 块链在分配时就已经写下去了, 但还在系统缓存里; 掉电丢掉它们, 这些资源重启后会被
+    // 当成空闲的再分一次, 两个文件共用同一块
+    disk.sync();
+
+    // 将inode内容写入磁盘: d_addr 已由 appendBlk 逐个写进盘上了, 这一次补上
+    // d_mode 与 d_size
     writeDisk(disk, &new_inode, sizeof(Inode), INODE_AREA_OFFSET + inode_index * sizeof(Inode));
 
     // 在空闲盘块上新建文件目录项
     FileDir dir(name, inode_index, i_table.inode[i_table.getCurrentDir()].i_number);
     dir.create(disk, new_inode.BMap(disk, 0));
+
+    // 提交点: 文件本体(自己的 inode 与首块里的目录项)落盘。父目录接下来就要指向它,
+    // 这一步落不下去, 掉电后父目录里会留下一个指向空 inode 的名字
+    disk.sync();
+
+    // 登记进父目录放在最后: 父目录里一出现这个 inode 号, 文件就可达了 —— ls 会拿
+    // BMap(disk, 0) 去读首块里的目录项。所以 inode 本体(含 d_addr[0])与首块里的
+    // 目录项都要先落盘, 再让父目录指向它
+    writeDisk(disk, &inode_index, sizeof(int16_t), file_content_offset + sub_file_num * sizeof(int16_t));
+    int c_inode_index = i_table.inode[i_table.getCurrentDir()].i_number;
+    Inode c_inode;
+    readDisk(disk, &c_inode, sizeof(Inode), INODE_AREA_OFFSET + c_inode_index * sizeof(Inode));
+    c_inode.addSubDirSize();
+    writeDisk(disk, &c_inode, sizeof(Inode), INODE_AREA_OFFSET + c_inode_index * sizeof(Inode));
+
+    // 提交点: 父目录指向它, 是这条路径的最后一步。顺序不能反 —— 反过来掉电会留下
+    // "父目录的 d_size 说有 N 项, 第 N 项却还是上一轮留下的陈旧 inode 号"的幻影
+    // 目录项, 那个 inode 号早就属于别的文件了
+    disk.sync();
 }
 
-int openCloseFile(int mode, string name, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table)
+int openCloseFile(int mode, string name, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table)
 {
     // 查找当前目录下是否存在同名的普通文件
     int c_dir_index = getCurrentBlk(disk, i_table);
@@ -208,7 +238,7 @@ int openCloseFile(int mode, string name, std::fstream& disk, SuperBlock& sblk, M
     return 0;
 }
 
-std::string readWriteFile(int mode, string name, string& str, int size, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
+std::string readWriteFile(int mode, string name, string& str, int size, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
 {
     std::string ret;
     // 查找当前目录下是否存在同名的普通文件
@@ -248,6 +278,10 @@ std::string readWriteFile(int mode, string name, string& str, int size, std::fst
                 int end_cur = (start_cur + size - 1) % BYTE_PER_BLOCK; //在块内，读写结束的位置
                 int blk_num = blocksSpanned(start_cur, size); //需要读入的块数
 
+                // 扩容路径的标志: 它决定了传输循环跑完之后要不要重写 inode 头部。
+                // 之所以把那次写挪到循环后面, 是为了让内容先落盘 (见循环之后)
+                bool grew = false;
+
                 if (pointer_offset + size > inode.getSize()) //如果读写大小超过了文件上限
                 {
                     //如果读大小超过文件上限
@@ -281,8 +315,8 @@ std::string readWriteFile(int mode, string name, string& str, int size, std::fst
                         //cout << "新申请" << new_blk_num << "个盘块" << endl;
                         for (int i = 0; i < new_blk_num; i++)
                         {
-                            int blk_index = sblk.distributeBlk(disk);
-                            inode.appendBlk(disk, sblk, inode_index, blk_index);
+                            int blk_index = sblk.distributeBlk(disk, b_mgr);
+                            inode.appendBlk(disk, sblk, inode_index, blk_index, b_mgr);
                             //cout << "新申请了盘块" << blk_index << endl;
                             // 同 newFile: 加完这一块之后 d_size 该是"装下
                             // old_blk_num + i + 1 块"的字节数。changeSize 是增量,
@@ -292,12 +326,11 @@ std::string readWriteFile(int mode, string name, string& str, int size, std::fst
                         }
                         // 盘块备齐, d_size 落到准确的字节数
                         inode.changeSize(new_size - inode.getSize());
-                        // 将inode内容写入磁盘
-                        writeDisk(disk, &inode, sizeof(Inode), INODE_AREA_OFFSET + inode_index * sizeof(Inode));
-                        
-                        // 更新内存inode
-                        readDisk(disk, &i_table.inode[i_table.find(inode_index)], sizeof(Inode), INODE_AREA_OFFSET + inode_index * sizeof(Inode));
-                        
+                        // 带新 d_size 的 inode 头部等到传输循环之后再写: d_size 一旦
+                        // 落盘, 它就声明"这个文件有 new_size 字节", 那些字节必须已经
+                        // 在设备上。这里只是把它标出来
+                        grew = true;
+
                         //cout << "文件新大小为" << inode.getSize() << endl;
                     }
                 }
@@ -341,9 +374,24 @@ std::string readWriteFile(int mode, string name, string& str, int size, std::fst
                         b_mgr.Bwrite(disk, inode.BMap(disk, i + (sizeof(FileDir) + pointer_offset) / BYTE_PER_BLOCK), buffer, start, end - start + 1);
                         offset += end - start + 1;
                     }
-                    //更改文件读写指针 
+                    //更改文件读写指针
                     f_table.setOffset(inode_index, f_table.getOffset(inode_index) + end - start + 1);
                     //cout << "当前文件指针在" << f_table.getOffset(inode_index) << endl;
+                }
+
+                if (grew)
+                {
+                    // 提交点, 顺序是这里的关键: 内容经缓存写下去, 先 flush 再 sync 把
+                    // 它推到设备上, 然后才写 d_size。反过来的话, 掉电后盘上的 inode
+                    // 会说"这个文件有 N 字节", 而它指向的块里还留着上一个主人的内容 ——
+                    // 读出来的是别人的数据, 不是丢一次写那么简单
+                    b_mgr.flush(disk);
+                    disk.sync();
+                    // 将inode内容写入磁盘
+                    writeDisk(disk, &inode, sizeof(Inode), INODE_AREA_OFFSET + inode_index * sizeof(Inode));
+                    // 更新内存inode
+                    readDisk(disk, &i_table.inode[i_table.find(inode_index)], sizeof(Inode), INODE_AREA_OFFSET + inode_index * sizeof(Inode));
+                    disk.sync();
                 }
                 return ret;
             }
@@ -401,7 +449,7 @@ int parseNonNegInt(const string& s, int& out)
     return 1;
 }
 
-void fformat(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
+void fformat(DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
 {
     //清空所有打开项
     i_table.clear();
@@ -409,10 +457,10 @@ void fformat(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenF
     //缓存队列清空
     b_mgr.clear(disk);
     //格式化
-    diskFormat(disk, sblk, i_table, f_table);
+    diskFormat(disk, sblk, i_table, f_table, b_mgr);
 }
 
-void ls(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& t_table)
+void ls(DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& t_table)
 {
     // 找到当前目录对应的物理块
     int c_dir_index = getCurrentBlk(disk, i_table);
@@ -432,13 +480,13 @@ void ls(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTa
     cout << endl;
 }
 
-int mkdir(string dirName, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& t_table)
+int mkdir(string dirName, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& t_table, BufferMgr& b_mgr)
 {
-    newFile(FILE_MODE::dir_file, dirName, disk, sblk, i_table, t_table);
+    newFile(FILE_MODE::dir_file, dirName, disk, sblk, i_table, t_table, b_mgr, 0);
     return 0;
 }
 
-void cd(std::string dirName, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table)
+void cd(std::string dirName, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table)
 {
     // 查找当前目录下是否存在同名目录
     int c_dir_index = getCurrentBlk(disk, i_table);
@@ -497,25 +545,30 @@ void cd(std::string dirName, std::fstream& disk, SuperBlock& sblk, MemInodeTable
     }
 }
 
-int fcreat(string fileName, int size, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table)
+int fcreat(string fileName, int size, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
 {
-    newFile(FILE_MODE::normal_file, fileName, disk, sblk, i_table, f_table, size);
+    newFile(FILE_MODE::normal_file, fileName, disk, sblk, i_table, f_table, b_mgr, size);
     return 0;
 }
 
-int fopen(string fileName, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table)
+int fopen(string fileName, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
 {
     openCloseFile(OpenClose::open, fileName, disk, sblk, i_table, f_table);
     return 1;
 }
 
-int fclose(string fileName, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table)
+int fclose(string fileName, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
 {
     openCloseFile(OpenClose::close, fileName, disk, sblk, i_table, f_table);
+
+    // 提交点: 关闭即提交。原地覆盖写(不扩容)那条路径在 readWriteFile 里走的是
+    // "不写 inode、不落盘"的分支 —— 内容只挂在缓存里, 全靠这里把它推上设备
+    b_mgr.flush(disk);
+    disk.sync();
     return 1;
 }
 
-string fread(string fileName, int size, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
+string fread(string fileName, int size, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
 {
     // 首先在文件打开结构中寻找该文件
     if (false)
@@ -531,7 +584,7 @@ string fread(string fileName, int size, std::fstream& disk, SuperBlock& sblk, Me
     }
 }
 
-void fwrite(string fileName, string& buffer, int size, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
+void fwrite(string fileName, string& buffer, int size, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
 {
     // 首先在文件打开结构中寻找该文件
     if (false)
@@ -544,7 +597,7 @@ void fwrite(string fileName, string& buffer, int size, std::fstream& disk, Super
     }
 }
 
-int flseek(string fileName, int offset, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table)
+int flseek(string fileName, int offset, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table)
 {
     std::string ret;
     // 查找当前目录下是否存在同名的普通文件
@@ -594,7 +647,7 @@ int flseek(string fileName, int offset, std::fstream& disk, SuperBlock& sblk, Me
     return -1;
 }
 
-void fdelete(string fileName, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table)
+void fdelete(string fileName, DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
 {
     int c_dir_index = getCurrentBlk(disk, i_table);
     int sub_file_num = getCurrentDirSubFileNum(disk, i_table);
@@ -635,7 +688,18 @@ void fdelete(string fileName, std::fstream& disk, SuperBlock& sblk, MemInodeTabl
             return;
         }
 
-        // 到这里才真正动手: 将之后的子inode号全都向前移动一个
+        // 先改父目录的项数, 再搬目录项。顺序反过来是要出事的: 先搬完、项数还没减,
+        // 盘上就成了一份"项数说还有 N 项, 而第 N 项的位置上留着上一轮搬过来的重复
+        // 项"的目录 —— 那个名字后面被删掉一次, 就会释放掉一个还有第二个目录项指着
+        // 的 inode。先减项数的话, 掉电最多让最后一项暂时看不见(纯泄漏), 被删的那个
+        // 文件完好无损, 再删一次即可
+        int c_inode_index = i_table.inode[i_table.getCurrentDir()].i_number;
+        Inode c_inode;
+        readDisk(disk, &c_inode, sizeof(Inode), INODE_AREA_OFFSET + c_inode_index * sizeof(Inode));
+        c_inode.eraseSubDirSize();
+        writeDisk(disk, &c_inode, sizeof(Inode), INODE_AREA_OFFSET + c_inode_index * sizeof(Inode));
+
+        // 将之后的子inode号全都向前移动一个
         for (int j = i; j < sub_file_num - 1; j++)
         {
             int16_t tem;
@@ -643,23 +707,28 @@ void fdelete(string fileName, std::fstream& disk, SuperBlock& sblk, MemInodeTabl
             writeDisk(disk, &tem, sizeof(int16_t), file_content_offset + j * sizeof(int16_t));
         }
 
-        //取当前目录对应的inode，缩减inode对应的d_size
-        int c_inode_index = i_table.inode[i_table.getCurrentDir()].i_number;
-        Inode c_inode;
-        readDisk(disk, &c_inode, sizeof(Inode), INODE_AREA_OFFSET + c_inode_index * sizeof(Inode));
-        c_inode.eraseSubDirSize();
-        writeDisk(disk, &c_inode, sizeof(Inode), INODE_AREA_OFFSET + c_inode_index * sizeof(Inode));
+        // 提交点: 目录项已经摘掉、父目录的项数也改好了, 这一步之后这个文件就不可达
+        // 了。回收必须排在它后面 —— releaseAllBlk 在空闲表满时会往回收来的块里直写
+        // 一张分组索引表, 那是一次整块覆盖。要是回收先落了盘而摘除还在缓存里, 掉电后
+        // 目录项还在, 文件却已经没地方读了
+        disk.sync();
 
         // 普通文件与空目录到此都可以回收 inode 与盘块了
-        inode.releaseAllBlk(disk, sblk);
+        inode.releaseAllBlk(disk, sblk, b_mgr);
         sblk.releaseInode(inode_index);
+
+        // 提交点: 回收结果落盘。releaseBlk/releaseInode 只改了内存里那张空闲表,
+        // 它自己不会写盘, 所以这里补一次 save —— 不补的话掉电重启后这些块和 inode
+        // 仍然被记作"占用", 从此谁也拿不到它们
+        sblk.save(disk);
+        disk.sync();
         return;
     }
     cout << "当前路径下不存在文件" << fileName << endl;
     return;
 }
 
-void printCurrentPath(std::fstream& disk, MemInodeTable& i_table)
+void printCurrentPath(DiskFile& disk, MemInodeTable& i_table)
 {
     cout << "MF " << i_table.getCurrentFullPath(disk) << " > ";
 }
@@ -677,7 +746,7 @@ void usage()
     cout << "fcreat filename filesize" << endl;
 }
 
-void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
+void Shell::usr(DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
 {
     cout << "欢迎使用 misakifs 文件系统" << endl;
     init(disk, sblk, i_table, f_table);
@@ -691,10 +760,10 @@ void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
     ls(disk, sblk, i_table, f_table);
 
     cout << "新建bin etc home dev四个子文件夹" << endl;
-    mkdir("bin", disk, sblk, i_table, f_table);
-    mkdir("etc", disk, sblk, i_table, f_table);
-    mkdir("home", disk, sblk, i_table, f_table);
-    mkdir("dev", disk, sblk, i_table, f_table);
+    mkdir("bin", disk, sblk, i_table, f_table, b_mgr);
+    mkdir("etc", disk, sblk, i_table, f_table, b_mgr);
+    mkdir("home", disk, sblk, i_table, f_table, b_mgr);
+    mkdir("dev", disk, sblk, i_table, f_table, b_mgr);
     cout << "当前目录内容为: " << endl;
     printCurrentPath(disk, i_table);
     ls(disk, sblk, i_table, f_table);
@@ -706,30 +775,30 @@ void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
     ls(disk, sblk, i_table, f_table);
 
     cout << "新建texts reports photos三个子文件夹" << endl;
-    mkdir("texts", disk, sblk, i_table, f_table);
-    mkdir("reports", disk, sblk, i_table, f_table);
-    mkdir("photos", disk, sblk, i_table, f_table);
+    mkdir("texts", disk, sblk, i_table, f_table, b_mgr);
+    mkdir("reports", disk, sblk, i_table, f_table, b_mgr);
+    mkdir("photos", disk, sblk, i_table, f_table, b_mgr);
     cout << "当前目录内容为: " << endl;
     printCurrentPath(disk, i_table);
     ls(disk, sblk, i_table, f_table);
 
     cout << "切换到texts目录下保存报告" << endl;
     cd("texts", disk, sblk, i_table, f_table);
-    fcreat("reports.md", 4 * 1024, disk, sblk, i_table, f_table);
+    fcreat("reports.md", 4 * 1024, disk, sblk, i_table, f_table, b_mgr);
     printCurrentPath(disk, i_table);
     ls(disk, sblk, i_table, f_table);
 
     cout << "切换到reports目录下保存txt文件" << endl;
     cd("..", disk, sblk, i_table, f_table);
     cd("reports", disk, sblk, i_table, f_table);
-    fcreat("reports.md", 4 * 1024, disk, sblk, i_table, f_table);
+    fcreat("reports.md", 4 * 1024, disk, sblk, i_table, f_table, b_mgr);
     printCurrentPath(disk, i_table);
     ls(disk, sblk, i_table, f_table);
 
     cout << "切换到photos目录下保存图片" << endl;
     cd("..", disk, sblk, i_table, f_table);
     cd("photos", disk, sblk, i_table, f_table);
-    fcreat("pic.jpg", 4 * 1024, disk, sblk, i_table, f_table);
+    fcreat("pic.jpg", 4 * 1024, disk, sblk, i_table, f_table, b_mgr);
     printCurrentPath(disk, i_table);
     ls(disk, sblk, i_table, f_table);
 
@@ -738,7 +807,7 @@ void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
     cd("..", disk, sblk, i_table, f_table);
 
     cout << "新建目录test, 并切换至test" << endl;
-    mkdir("test", disk, sblk, i_table, f_table);
+    mkdir("test", disk, sblk, i_table, f_table, b_mgr);
     cd("test", disk, sblk, i_table, f_table);
     printCurrentPath(disk, i_table);
     ls(disk, sblk, i_table, f_table);
@@ -749,8 +818,8 @@ void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
         str += ch[i < 500] + i % 26;
 
     cout << "新建文件Jerry, 并写入800个字节" << endl;
-    fcreat("Jerry", 10, disk, sblk, i_table, f_table);
-    fopen("Jerry", disk, sblk, i_table, f_table);
+    fcreat("Jerry", 10, disk, sblk, i_table, f_table, b_mgr);
+    fopen("Jerry", disk, sblk, i_table, f_table, b_mgr);
     fwrite("Jerry", str, str.length(), disk, sblk, i_table, f_table, b_mgr);
 
     cout << "当前文件的内容是: " << endl;
@@ -771,7 +840,7 @@ void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
     flseek("Jerry", 0, disk, sblk, i_table, f_table);
     cout << fread("Jerry", str.length(), disk, sblk, i_table, f_table, b_mgr) << endl;
 
-    fclose("Jerry", disk, sblk, i_table, f_table);
+    fclose("Jerry", disk, sblk, i_table, f_table, b_mgr);
     cout << "回到根目录" << endl;
     cd("..", disk, sblk, i_table, f_table);
     printCurrentPath(disk, i_table);
@@ -811,7 +880,7 @@ void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
                 usage();
                 continue;
             }
-            mkdir(args[0], disk, sblk, i_table, f_table);
+            mkdir(args[0], disk, sblk, i_table, f_table, b_mgr);
         }
         else if (cmd == cmd_supported[3])
         {
@@ -832,7 +901,7 @@ void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
                 usage();
                 continue;
             }
-            fcreat(args[0], size, disk, sblk, i_table, f_table);
+            fcreat(args[0], size, disk, sblk, i_table, f_table, b_mgr);
         }
         else if (cmd == cmd_supported[5]) //fopen
         {
@@ -841,7 +910,7 @@ void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
                 usage();
                 continue;
             }
-            fopen(args[0], disk, sblk, i_table, f_table);
+            fopen(args[0], disk, sblk, i_table, f_table, b_mgr);
         }
         else if (cmd == cmd_supported[6])
         {
@@ -850,7 +919,7 @@ void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
                 usage();
                 continue;
             }
-            fclose(args[0], disk, sblk, i_table, f_table);
+            fclose(args[0], disk, sblk, i_table, f_table, b_mgr);
         }
         else if (cmd == cmd_supported[7]) //fread
         {
@@ -882,7 +951,7 @@ void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
         }
         else if (cmd == cmd_supported[10])
         {
-            fdelete(args[0], disk, sblk, i_table, f_table);
+            fdelete(args[0], disk, sblk, i_table, f_table, b_mgr);
         }
         else if (cmd == cmd_supported[11])
         {
@@ -890,6 +959,9 @@ void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
             b_mgr.clear(disk);
             //保存修改过的superblock
             writeDisk(disk, &sblk, sizeof(SuperBlock), 0);
+            // 提交点: 正常退出也算一次提交 —— 清空的缓存、刚写下的 superblock,
+            // 都要在进程走人之前真正落到设备上
+            disk.sync();
             cout << "正在退出 misakifs ..." << endl;
             break;
         }

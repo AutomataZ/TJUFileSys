@@ -1,4 +1,3 @@
-#include <fstream>
 #include <iostream>
 #include <cstdlib>
 #include "./wirteDisk/wirteDisk.h"
@@ -15,9 +14,8 @@ using namespace std;
 int main()
 {
     // 打开文件, 模拟加载磁盘
-    fstream file;
-    file.open(disk_name.c_str(), ios::in|ios::out);
-    if (!file.is_open())
+    DiskFile file;
+    if (!file.open(disk_name.c_str()))
     {
         cout << "文件没有正确打开!" << endl;
         exit(-1);
@@ -36,7 +34,7 @@ int main()
     OpenFileTable f_table;
 
     // 如果是第一次加载文件系统, 进行格式化
-    //diskFormat(file, sblk, i_table, f_table);
+    //diskFormat(file, sblk, i_table, f_table, buffer_manager);
 
     test();
     //sblk.print();

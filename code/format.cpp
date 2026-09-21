@@ -11,7 +11,7 @@
     using namespace std;
 #endif
 
-void diskFormat(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table)
+void diskFormat(DiskFile& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
 {
     // 全盘填充 0 
     char FORMAT[DISK_SIZE];
@@ -37,14 +37,14 @@ void diskFormat(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
     int inode_index = sblk.distributeInode(disk);
 
     // 分配一个空闲盘块出来
-    int file_block_index = sblk.distributeBlk(disk);
+    int file_block_index = sblk.distributeBlk(disk, b_mgr);
 
     Inode inode;
 
     //sblk.print();
 
     // 将分配到的空闲盘块关联到分配到的inode上
-    inode.appendBlk(disk, sblk, inode_index, file_block_index);
+    inode.appendBlk(disk, sblk, inode_index, file_block_index, b_mgr);
     inode.setMode(FILE_MODE::dir_file);
 
     // 将内存 inode 整体写入磁盘
@@ -70,4 +70,7 @@ void diskFormat(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
     // 将superblock存盘
     writeDisk(disk, &sblk, sizeof(SuperBlock), 0);
 
+    // 提交点: 格式化写完即落地。放在这里而不是 fformat 里, 是为了让直接调用
+    // diskFormat 的路径(见 main.cpp 里注释掉的那处)也一并覆盖
+    disk.sync();
 }

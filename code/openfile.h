@@ -1,7 +1,7 @@
 #pragma once
 #include "inode.h"
 #include "define.h"
-#include <fstream>
+class DiskFile;
 
 #ifdef DEBUG_ENV
 #include <iostream>
@@ -35,18 +35,23 @@ protected:
     int current_dir; //当前打开目录的下标，inode[current_dir]是打开目录的inode
 public:
     MemInode inode[MEM_INODE_NUM];
+
+    // 表刚建立时是空的。没有这个构造函数, i_size 就是栈上的垃圾值, 而 find() 拿它
+    // 当遍历上界 —— 表里一项都没有却要走过上亿个 inode[] 项
+    MemInodeTable() : i_size(0), current_dir(0) {}
+
     int size() {return i_size;}
     /// @brief 查找inode_index号inode是否已经打开
     /// @param inode_index inode号
     /// @return 查找到返回该inode对应的下标，找不到返回-1
     int find(int inode_index);
-    int append(std::fstream& disk, int inode_index);
-    int erase(std::fstream& disk, int inode_index);
+    int append(DiskFile& disk, int inode_index);
+    int erase(DiskFile& disk, int inode_index);
     void clear();
     void modifyCurrentDir(int index) { current_dir = index; }
     int getCurrentDir() { return current_dir; }
-    string getCurrentDirName(std::fstream& disk);
-    string getCurrentFullPath(std::fstream& disk);
+    string getCurrentDirName(DiskFile& disk);
+    string getCurrentFullPath(DiskFile& disk);
 #ifdef DEBUG_ENV
     void print() {
         cout << "当前内存inode表 (共 " << i_size << " / " << MEM_INODE_NUM
@@ -82,9 +87,13 @@ protected:
     int t_size;
 public:
     OpenFileDir file[OPEN_FILE_TABLE_SIZE];
+
+    // 同上: 表刚建立时是空的
+    OpenFileTable() : t_size(0) {}
+
     int size() {return t_size;}
-    int append(std::fstream& disk, OpenFileDir dir);
-    int erase(std::fstream& disk, OpenFileDir dir);
+    int append(DiskFile& disk, OpenFileDir dir);
+    int erase(DiskFile& disk, OpenFileDir dir);
     void clear();
     int find(int inode_index);
     int getOffset(int inode_index);

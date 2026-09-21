@@ -17,15 +17,15 @@
 namespace {
 
 // 往 inode 中追加 n 个数据块, 返回分配到的块号
-std::vector<int> appendBlocks(std::fstream& disk, SuperBlock& s, Inode& inode,
-                              int inode_index, int n)
+std::vector<int> appendBlocks(DiskFile& disk, SuperBlock& s, Inode& inode,
+                              int inode_index, int n, BufferMgr& b_mgr)
 {
     std::vector<int> blks;
     for (int i = 0; i < n; i++)
     {
-        int blk = s.distributeBlk(disk);
+        int blk = s.distributeBlk(disk, b_mgr);
         blks.push_back(blk);
-        inode.appendBlk(disk, s, inode_index, blk);
+        inode.appendBlk(disk, s, inode_index, blk, b_mgr);
         // 推进 d_size, 下次落到下一槽位。按当前已有的块数递推, 便于分多次调用
         int have = blocksForFileContent(inode.getSize());
         inode.changeSize((have + 1) * BYTE_PER_BLOCK - FILE_DIR_SIZE - inode.getSize());
@@ -36,13 +36,13 @@ std::vector<int> appendBlocks(std::fstream& disk, SuperBlock& s, Inode& inode,
 // 抽干内存里的空闲表, 得到"此刻空闲链上还剩哪几块"。
 // distributeBlk 只读盘、不写盘, 所以抽完把 sblk 整个按值还原即可, 磁盘不受影响。
 // 循环上界是防御性的: 万一空闲链里被塞进了假块号(比如 -1)绕成环, 逐个弹出会停不下来。
-std::set<int> freeBlockSet(std::fstream& disk, SuperBlock& s)
+std::set<int> freeBlockSet(DiskFile& disk, SuperBlock& s, BufferMgr& b_mgr)
 {
     SuperBlock keep = s;
     std::set<int> got;
     for (int i = 0; i < TOTAL_BLOCK_NUM * 2; i++)
     {
-        int blk = s.distributeBlk(disk);
+        int blk = s.distributeBlk(disk, b_mgr);
         if (blk < 0)
             break;
         got.insert(blk);
@@ -94,7 +94,7 @@ UT_TEST(inode, direct_index_slots, "前 6 个块落在直接索引 d_addr[0..5]"
     InodeMirror m;
     snapshotInode(f.disk, inode, 0, m);          // 先把空 inode 落盘
 
-    std::vector<int> blks = appendBlocks(f.disk, f.sblk, inode, 0, 6);
+    std::vector<int> blks = appendBlocks(f.disk, f.sblk, inode, 0, 6, f.b_mgr);
 
     readInodeMirror(f.disk, 0, m);               // 不重新快照, 验证 appendBlk 自己写盘的内容
     for (int i = 0; i < 6; i++)
@@ -111,7 +111,7 @@ UT_TEST(inode, seventh_block_goes_indirect, "第 7 个块进入一级间接索�
     InodeMirror m;
     snapshotInode(f.disk, inode, 0, m);
 
-    std::vector<int> blks = appendBlocks(f.disk, f.sblk, inode, 0, 7);
+    std::vector<int> blks = appendBlocks(f.disk, f.sblk, inode, 0, 7, f.b_mgr);
 
     readInodeMirror(f.disk, 0, m);
     for (int i = 0; i < 6; i++)
@@ -133,7 +133,7 @@ UT_TEST(inode, bmap_roundtrip_from_disk, "从磁盘重读 inode 后 BMap 能逐�
     snapshotInode(f.disk, inode, 0, m);
 
     const int N = 10;
-    std::vector<int> blks = appendBlocks(f.disk, f.sblk, inode, 0, N);
+    std::vector<int> blks = appendBlocks(f.disk, f.sblk, inode, 0, N, f.b_mgr);
 
     // 关键: 换一个全新的 Inode 对象, 内容完全来自磁盘,
     // 这样 BMap 走的是磁盘上的 d_addr 与索引表, 而非内存中的对象
@@ -152,7 +152,7 @@ UT_TEST(inode, bmap_roundtrip_large, "跨一级与二级间接的索引反查 (2
     snapshotInode(f.disk, inode, 0, m);
 
     const int N = 270;   // 6 直接 + 256 一级间接 + 8 二级间接
-    std::vector<int> blks = appendBlocks(f.disk, f.sblk, inode, 0, N);
+    std::vector<int> blks = appendBlocks(f.disk, f.sblk, inode, 0, N, f.b_mgr);
 
     Inode reloaded;
     readDisk(f.disk, &reloaded, sizeof(Inode), inodeOffset(0));
@@ -181,10 +181,10 @@ UT_TEST(inode, slot_index_depends_on_size, "appendBlk 的槽位下标由 d_size 
     InodeMirror m;
     snapshotInode(f.disk, inode, 0, m);
 
-    int b1 = f.sblk.distributeBlk(f.disk);
-    int b2 = f.sblk.distributeBlk(f.disk);
-    inode.appendBlk(f.disk, f.sblk, 0, b1);
-    inode.appendBlk(f.disk, f.sblk, 0, b2);   // d_size 仍为 0
+    int b1 = f.sblk.distributeBlk(f.disk, f.b_mgr);
+    int b2 = f.sblk.distributeBlk(f.disk, f.b_mgr);
+    inode.appendBlk(f.disk, f.sblk, 0, b1, f.b_mgr);
+    inode.appendBlk(f.disk, f.sblk, 0, b2, f.b_mgr);   // d_size 仍为 0
 
     readInodeMirror(f.disk, 0, m);
     UT_CHECK_EQ(m.d_addr[0], b2);
@@ -206,7 +206,7 @@ UT_TEST(inode, release_6block_file_frees_index, "删除恰好 6 块的文件应�
     InodeMirror m;
     snapshotInode(f.disk, inode, 0, m);
 
-    std::vector<int> blks = appendBlocks(f.disk, f.sblk, inode, 0, 6);
+    std::vector<int> blks = appendBlocks(f.disk, f.sblk, inode, 0, 6, f.b_mgr);
     readInodeMirror(f.disk, 0, m);
 
     const int index_blk = m.d_addr[6];
@@ -217,7 +217,7 @@ UT_TEST(inode, release_6block_file_frees_index, "删除恰好 6 块的文件应�
     SuperBlockMirror before = superBlockOf(f.disk, f.sblk);
     const int top_before = before.s_nfree;
 
-    inode.releaseAllBlk(f.disk, f.sblk);
+    inode.releaseAllBlk(f.disk, f.sblk, f.b_mgr);
 
     SuperBlockMirror after = superBlockOf(f.disk, f.sblk);
     UT_CHECK_MSG(after.s_nfree > top_before,
@@ -253,7 +253,7 @@ UT_TEST(inode, release_134block_file_frees_second_index_table,
     snapshotInode(f.disk, inode, 0, m);
 
     const int N = 134;   // 6 直接 + 128 一级 + 进入第二张表的第 134 块
-    appendBlocks(f.disk, f.sblk, inode, 0, N);
+    appendBlocks(f.disk, f.sblk, inode, 0, N, f.b_mgr);
     readInodeMirror(f.disk, 0, m);
 
     const int table_1 = m.d_addr[6];
@@ -265,14 +265,14 @@ UT_TEST(inode, release_134block_file_frees_second_index_table,
                  ut::to_str(table_1) + " d_addr[7]=" + ut::to_str(table_2));
     UT_CHECK_MSG(table_1 != table_2, "两张一级索引表应是两个不同的盘块");
 
-    inode.releaseAllBlk(f.disk, f.sblk);
+    inode.releaseAllBlk(f.disk, f.sblk, f.b_mgr);
 
     // 逐个弹出而不是在 s_free 里查找: 这里要回收 136 个块, 必然跨过成组链接法的
     // 分组边界, 块可能已经被写进上一组的索引块里, 只看当前这张表会漏判
     bool got_1 = false, got_2 = false;
     for (int i = 0; i < 4 * N && !(got_1 && got_2); i++)
     {
-        int blk = f.sblk.distributeBlk(f.disk);
+        int blk = f.sblk.distributeBlk(f.disk, f.b_mgr);
         if (blk < 0)
             break;
         if (blk == table_1) got_1 = true;
@@ -302,10 +302,10 @@ UT_TEST(inode, release_262block_file_frees_second_level_subtable,
     Inode inode;
     InodeMirror m;
     snapshotInode(f.disk, inode, 0, m);
-    const std::set<int> free_before = freeBlockSet(f.disk, f.sblk);
+    const std::set<int> free_before = freeBlockSet(f.disk, f.sblk, f.b_mgr);
 
     const int N = 262;   // 6 直接 + 256 一级间接 (两张表) + 进入二级索引的第一块
-    appendBlocks(f.disk, f.sblk, inode, 0, N);
+    appendBlocks(f.disk, f.sblk, inode, 0, N, f.b_mgr);
     readInodeMirror(f.disk, 0, m);
 
     const int table_2 = m.d_addr[8];
@@ -318,9 +318,9 @@ UT_TEST(inode, release_262block_file_frees_second_level_subtable,
     UT_CHECK_MSG(sub_table >= FILE_BLOCK_START,
                  "d_addr[8] 的第 0 项应是预分配的子表, 实际 " + ut::to_str(sub_table));
 
-    inode.releaseAllBlk(f.disk, f.sblk);
+    inode.releaseAllBlk(f.disk, f.sblk, f.b_mgr);
 
-    const std::set<int> free_after = freeBlockSet(f.disk, f.sblk);
+    const std::set<int> free_after = freeBlockSet(f.disk, f.sblk, f.b_mgr);
     UT_CHECK_MSG(free_after.count(sub_table) > 0,
                  "二级间接索引的子表 " + ut::to_str(sub_table) + " 未被回收, 已泄漏");
     UT_CHECK_MSG(free_after.count(table_2) > 0,
@@ -350,9 +350,9 @@ UT_TEST(inode, release_large_file_frees_every_subtable,
         Inode inode;
         InodeMirror m;
         snapshotInode(f.disk, inode, 0, m);
-        const std::set<int> free_before = freeBlockSet(f.disk, f.sblk);
+        const std::set<int> free_before = freeBlockSet(f.disk, f.sblk, f.b_mgr);
 
-        appendBlocks(f.disk, f.sblk, inode, 0, N);
+        appendBlocks(f.disk, f.sblk, inode, 0, N, f.b_mgr);
         readInodeMirror(f.disk, 0, m);
         const int table_2 = m.d_addr[8];
 
@@ -366,8 +366,8 @@ UT_TEST(inode, release_large_file_frees_every_subtable,
                 subs.push_back(blk);
             }
 
-        inode.releaseAllBlk(f.disk, f.sblk);
-        const std::set<int> free_after = freeBlockSet(f.disk, f.sblk);
+        inode.releaseAllBlk(f.disk, f.sblk, f.b_mgr);
+        const std::set<int> free_after = freeBlockSet(f.disk, f.sblk, f.b_mgr);
 
         const std::string tag = ut::to_str(N) + " 块的文件 (d_addr[8] 下应有 " +
                                 ut::to_str(cases[k].sub_tables) + " 张子表): ";

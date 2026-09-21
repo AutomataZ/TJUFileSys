@@ -44,6 +44,33 @@ UT_TEST(superblock, free_list_after_format, "格式化后空闲块表内容正�
     UT_CHECK_MSG(ok, "空闲块表应为 193..292 连续递增");
 }
 
+// 分出去的 inode 号, 盘上那份空闲表不能还留着
+//
+// 这里只调 distributeInode, 不碰盘块。走 fcreat 就把这条测糊了: 紧接着分配盘块时
+// 的那次落盘写的是整个 superblock, 顺手把 inode 表也写了下去, 于是不管 inode 表
+// 自己有没有落盘, 盘上看起来都是对的。
+UT_TEST(superblock, allocate_inode_persists_free_table,
+        "分配 inode 时应先把它从盘上的空闲 inode 表里扣掉")
+{
+    FsFixture f;
+
+    // 直接读磁盘偏移 0 处的 1024 字节 —— superBlockOf 会先拿内存对象覆盖磁盘再读,
+    // 那样读到的是内存里的状态, 不是盘上的
+    SuperBlockMirror before;
+    readDisk(f.disk, &before, sizeof(SuperBlockMirror), 0);
+
+    const int idx = f.sblk.distributeInode(f.disk);
+    UT_CHECK_MSG(idx >= 0, "格式化后应当还能分到 inode");
+
+    SuperBlockMirror after;
+    readDisk(f.disk, &after, sizeof(SuperBlockMirror), 0);
+
+    UT_CHECK_EQ(after.s_ninode, before.s_ninode - 1);
+    for (int i = 0; i < after.s_ninode; i++)
+        UT_CHECK_MSG(after.s_inode[i] != idx,
+                     "盘上的空闲 inode 表仍留着刚分出去的 " + ut::to_str(idx));
+}
+
 UT_TEST(superblock, distribute_returns_distinct_blocks, "连续分配 200 个盘块互不重复")
 {
     FsFixture f;
@@ -52,7 +79,7 @@ UT_TEST(superblock, distribute_returns_distinct_blocks, "连续分配 200 个盘
 
     for (int i = 0; i < 200; i++)
     {
-        int blk = f.sblk.distributeBlk(f.disk);
+        int blk = f.sblk.distributeBlk(f.disk, f.b_mgr);
         if (blk < 0 || seen.count(blk)) { all_distinct = false; break; }
         seen.insert(blk);
     }
@@ -64,9 +91,9 @@ UT_TEST(superblock, release_then_distribute_is_lifo, "释放后重新分配拿�
 {
     FsFixture f;
 
-    int first = f.sblk.distributeBlk(f.disk);
-    f.sblk.releaseBlk(f.disk, first);
-    int again = f.sblk.distributeBlk(f.disk);
+    int first = f.sblk.distributeBlk(f.disk, f.b_mgr);
+    f.sblk.releaseBlk(f.disk, first, f.b_mgr);
+    int again = f.sblk.distributeBlk(f.disk, f.b_mgr);
 
     // releaseBlk 压栈到 s_free 顶端, distributeBlk 从顶端取, 故应拿回同一块
     UT_CHECK_EQ(again, first);
@@ -81,7 +108,7 @@ UT_TEST(superblock, refill_across_group_boundary, "跨组边界时从索引块�
     // 把直接管理区恰好耗尽: 这一批的最后一次分配会触发读索引块
     std::vector<int> got;
     for (int i = 0; i < 100; i++)
-        got.push_back(f.sblk.distributeBlk(f.disk));
+        got.push_back(f.sblk.distributeBlk(f.disk, f.b_mgr));
 
     SuperBlockMirror after = superBlockOf(f.disk, f.sblk);
 
@@ -99,7 +126,7 @@ UT_TEST(superblock, release_fills_then_links_group, "回收盘块填满一组后
     FsFixture f;
     std::vector<int> taken;
     for (int i = 0; i < 100; i++)
-        taken.push_back(f.sblk.distributeBlk(f.disk));
+        taken.push_back(f.sblk.distributeBlk(f.disk, f.b_mgr));
 
     // s_free 是栈, distributeBlk 弹栈顶, 所以 292 先出、193 后出
     UT_CHECK_EQ(taken[0], 292);
@@ -111,7 +138,7 @@ UT_TEST(superblock, release_fills_then_links_group, "回收盘块填满一组后
     // 此时表是满的, 第一次回收就会走"表满 ⟶ 把整表写进被回收的那个盘块"分支,
     // 因此充当新索引块的是 taken[0] 而不是最后一个
     for (int i = 0; i < 100; i++)
-        f.sblk.releaseBlk(f.disk, taken[i]);
+        f.sblk.releaseBlk(f.disk, taken[i], f.b_mgr);
 
     SuperBlockMirror after = superBlockOf(f.disk, f.sblk);
     UT_CHECK_EQ(after.s_nfree, 100);
@@ -160,7 +187,7 @@ UT_TEST(superblock, last_group_refill_covers_all, "最后一组补充时应填�
     m.s_free[0] = 7993;
     loadSuperBlock(f.disk, m, f.sblk);
 
-    int blk = f.sblk.distributeBlk(f.disk);
+    int blk = f.sblk.distributeBlk(f.disk, f.b_mgr);
     UT_CHECK_EQ(blk, 7993);
 
     SuperBlockMirror after = superBlockOf(f.disk, f.sblk);
@@ -186,7 +213,7 @@ UT_TEST(superblock, drain_entire_free_list, "耗尽空闲链应发出除根目�
     std::set<int> seen;
     bool duplicate = false;
     int blk;
-    while ((blk = f.sblk.distributeBlk(f.disk)) != -1)
+    while ((blk = f.sblk.distributeBlk(f.disk, f.b_mgr)) != -1)
     {
         if (seen.count(blk)) { duplicate = true; break; }
         seen.insert(blk);
