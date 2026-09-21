@@ -3,6 +3,7 @@ code/build/
 
 # 运行时由 fformat 生成的模拟磁盘镜像
 myDisk.img
+unittest.img
 
 # 编辑器配置
 .vscode/

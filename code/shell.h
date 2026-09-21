@@ -34,6 +34,7 @@ int openCloseFile(int mode, string name, std::fstream& disk, SuperBlock& sblk, M
 std::string readWriteFile(int mode, string name, string& str, int size, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
 
 int inputToCmd(const std::string& input, std::string& cmd, std::string(&args)[MAX_ARGS_NUM]);
+int parseNonNegInt(const std::string& s, int& out);
 
 void fformat(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr);
 void ls(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table);

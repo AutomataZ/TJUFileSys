@@ -191,7 +191,12 @@ Buffer* BufferMgr::Bread(std::fstream& disk, int blkno)
 Buffer* BufferMgr::Bwrite(std::fstream& disk, int blkno, std::string& buffer, int offset, int size)
 {
     // 不论缓存中是否有内容, 返回一个跟 blkno 相关联的缓存块
-    Buffer* bp = getBlk(disk, blkno);
+    //
+    // 走 Bread 而不是 getBlk: 这是一次局部写, 只覆盖 [offset, offset+size), 而回写时
+    // 整块 512 字节都会写出去。Bread 未命中时会先把块内原有内容读进来, 因此这次写入
+    // 构成一次完整的 read-modify-write —— 块内没参与本次写入的部分 (例如文件首块开头
+    // 那 sizeof(FileDir) 字节的目录项) 原样保留。
+    Buffer* bp = Bread(disk, blkno);
     // 写入缓存中
     int start = 0;
     if (offset >= 0)

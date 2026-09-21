@@ -61,6 +61,39 @@ g++ -std=c++11 -Icode -o code/build/main \
 启动后程序会先自动演示一遍课程设计要求的场景（见「五、演示流程」），随后进入交互模式，
 提示符形如 `MF /home/texts >`，输入命令回车执行，输入 `exit` 退出。
 
+### 运行测试
+
+`code/unittest/` 下是一套不依赖第三方框架的单元测试，覆盖成组链接法、6-2-2 混合索引、
+缓存 LRU 与延迟写、文件系统调用层、边界与数据完整性五层。测试自建镜像文件
+`unittest.img`（位于当前工作目录），不读 `disk_name`，因此与演示程序互不干扰。
+
+```bash
+# 方式一：cmake（构建 unittest 目标）
+cd code/build && cmake .. && make unittest && ./unittest
+
+# 方式二：直接调用 g++（无 cmake 环境时）
+g++ -std=c++11 -Icode -o code/build/unittest \
+    code/unittest/*.cpp \
+    code/shell.cpp code/filedir.cpp code/format.cpp code/inode.cpp \
+    code/superblock.cpp code/buffer.cpp code/openfile.cpp \
+    code/wirteDisk/wirteDisk.cpp
+cd code/build && ./unittest
+```
+
+`--full` 会额外运行重量级用例（20 万字节大文件，会跑满 6-2-2 索引与多组空闲链）：
+
+| 标记 | 含义 |
+| --- | --- |
+| `[PASS ]` | 用例通过 |
+| `[FAIL ]` | 用例失败，**计入退出码** |
+| `[BUG  ]` | 该用例断言的行为尚未达成，属预期结果，不计入退出码 |
+| `[FIXED]` | 该用例断言的行为已经达成，可把它改成普通用例 |
+| `[SKIP ]` | 需要 `--full` 才能运行的用例 |
+
+退出码只由普通用例决定，因此无论是否加 `--full` 都返回 0：既让用例能把尚未达成的行为
+一并记录下来，又让退出码始终真实反映代码是否变差。每个这样的用例，注释里都写明了它
+断言的是哪一条行为。
+
 ---
 
 ## 二、源码结构
@@ -77,6 +110,7 @@ g++ -std=c++11 -Icode -o code/build/main \
 | `code/format.h/.cpp` | 文件卷格式化 |
 | `code/shell.h/.cpp` | 命令解析、各命令实现、文件读写核心逻辑 |
 | `code/test.h/.cpp` | 缓存模块的调试用例（当前配置下不启用） |
+| `code/unittest/` | 单元测试套件（框架、固件、五个套件的用例） |
 | `code/wirteDisk/` | 模拟磁盘的底层字节读写接口 |
 | `code/CMakeLists.txt` | 构建脚本 |
 
@@ -94,9 +128,10 @@ g++ -std=c++11 -Icode -o code/build/main \
 约定：
 
 - 每块 **512 字节**
-- 每个 inode **64 字节**，一个盘块正好容纳 **8 个整数个** inode
+- 每个 inode **64 字节**，一个盘块正好容纳 **8 个** inode
 - inode 号 `i` 的定位：磁盘偏移 = `1024 + i × 64`，**O(1)** 可直接算出
-- 数据区块号 `b` 的定位：磁盘偏移 = `(192 + b) × 512`
+- 盘块号一律是**绝对块号**（0 号就是磁盘的第一块，文件数据区的第一块是第 192 块），
+  定位公式只有一个：磁盘偏移 = `blkno × 512`
 
 ---
 
@@ -104,8 +139,16 @@ g++ -std=c++11 -Icode -o code/build/main \
 
 ### 1. 逻辑磁盘的读写
 
-`readDisk` / `writeDisk` 提供 `(dev, blkno)` 到字节偏移的转换，是上层所有代码访问磁盘的
-唯一入口。因为只有一个设备、一个进程，实现中省略了 `dev` 参数。
+`code/wirteDisk/` 是上层所有代码访问模拟磁盘的唯一入口，只有两个函数：
+
+```cpp
+void readDisk (std::fstream& disk, void* buffer, int size, int offset);
+void writeDisk(std::fstream& disk, void* buffer, int size, int offset);
+```
+
+`offset` 是**相对文件开头的绝对字节偏移**，接口自身不做任何换算，也不认识「块」——
+把块号折成偏移是调用方的事（公式见「三、磁盘布局」）。因为只有一个设备、一个进程，
+这里直接拿文件流操作，没有 `dev`、也没有 `blkno` 参数。
 
 ### 2. SuperBlock 与 Inode 区
 
@@ -152,6 +195,14 @@ Inode 占 64 字节：
   下一级索引块并挂到 `d_addr` 上
 - **索引结构的检索**：`BMap()` 把逻辑块号映射为物理块号，逐级读取索引块
 
+索引块是**预分配**的：追加第 6 个直接块时就把一级索引块挂到 `d_addr[6]`，第 134 块时挂
+`d_addr[7]`，第 262 块时挂二级间接索引块 `d_addr[8]` 并同时备好它的第一张子表，此后每写满
+一张子表再备下一张（第 16646 块才轮到 `d_addr[9]`，4 MB 的镜像到不了）。因此「文件恰好占
+6 块」也意味着它已经持有一个索引块，而 `d_addr` 中尚未用到的槽位一律是 `-1`。
+
+`d_size` 由 `changeSize(int add)` 维护，它按**增量**累加 —— 调用方传的是「这次增加多少
+字节」，而不是目标值。
+
 ### 4. 目录结构
 
 目录项 `FileDir` 占 16 字节，写在文件**第一个数据块的开头**：
@@ -164,6 +215,11 @@ Inode 占 64 字节：
 
 目录项之后紧跟文件内容。对目录文件而言，这部分存放的是**子文件的 inode 号数组**，
 每 2 字节一个，因此 `d_size / 2` 就是子文件数。根目录的 `inode == fa_inode`。
+
+首块开头这 16 字节既然要留给目录项，文件容量就要按它折算：N 字节的文件占
+`ceil((N + 16) / 512)` 块，反过来占 B 块的文件能装 `B × 512 - 16` 字节。0 字节的文件也
+必须占一块 —— 否则名字无处可写。目录文件则恒定只占一块（子目录项写满也不扩），它的
+`d_size` 记的是子文件数，与盘块数无关。
 
 - **检索**：在当前目录的数据块中线性扫描子 inode 号，逐个读出其目录项比对文件名
 - **增加**：`newFile()` 分配 inode 与盘块，写入目录项并更新父目录大小
@@ -206,6 +262,12 @@ Inode 占 64 字节：
 
 `Bread(dev, blkno)` 流程：`getBlk()` 取得缓存 → 若 `new_create` 为真则从磁盘读入
 512 字节 → 返回该缓存。
+
+`Bwrite(dev, blkno, buf, offset, size)` 是一次**局部写**：只覆盖 `[offset, offset+size)`，
+而回写时整块 512 字节都会写出去。因此它也走 `Bread` 而不是 `getBlk` —— 未命中时先从
+磁盘读入块内原有内容，再改写其中一段，构成一次完整的 read-modify-write。若这里用
+`getBlk`，未命中的全零缓存会在回写时把块内没参与本次写入的部分清零 —— 文件首块开头那
+`sizeof(FileDir)` 字节的目录项（见「四、目录结构」）会因此被抹掉，文件当场从 `ls` 里消失。
 
 ### 7. 文件读写
 

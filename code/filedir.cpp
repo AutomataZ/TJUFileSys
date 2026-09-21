@@ -1,6 +1,7 @@
 #include "filedir.h"
 #include "define.h"
 #include "wirteDisk/wirteDisk.h"
+#include <iostream>
 
 FileDir::FileDir(std::string filename, int16_t inode, int16_t fa_inode)
 {
@@ -14,7 +15,18 @@ FileDir::FileDir(std::string filename, int16_t inode, int16_t fa_inode)
 
 void FileDir::create(std::fstream& disk, int blkno)
 {
-    writeDisk(disk, this, sizeof(FileDir), FILE_AREA_OFFSET + blkno * BYTE_PER_BLOCK);
+    // 块号为负说明调用方没有给这个文件分配首块。writeDisk 只在 offset >= 0 时
+    // 才 seekp, 负偏移换算出来的 -512 会让它退化成"从流的当前位置写"——通常是
+    // 紧邻的另一个 inode, 16 字节目录项盖上去就把别人的 inode 整个砸掉, 而且
+    // 当场不会有任何异常。与其静默损坏, 不如拦住并报出来。
+    // 目录项必须写在文件首块开头, 所以调用方有责任先分配好首块, 见 newFile。
+    if (blkno < 0)
+    {
+        std::cout << "目录项无处可写: 文件没有可用的首块 (块号 "
+                  << blkno << ")" << std::endl;
+        return;
+    }
+    writeDisk(disk, this, sizeof(FileDir), blkno * BYTE_PER_BLOCK);
 }
 
 bool FileDir::is_open(MemInodeTable& i_table, OpenFileTable& f_table)

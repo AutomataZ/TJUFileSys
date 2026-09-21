@@ -46,7 +46,7 @@ string MemInodeTable::getCurrentDirName(std::fstream& disk)
 {
     int index = inode[current_dir].BMap(disk, 0);
     FileDir dir;
-    readDisk(disk, &dir, sizeof(FileDir), FILE_AREA_OFFSET + index * BYTE_PER_BLOCK);
+    readDisk(disk, &dir, sizeof(FileDir), index * BYTE_PER_BLOCK);
     return dir.getFileName();
 }
 
@@ -59,7 +59,7 @@ string MemInodeTable::getCurrentFullPath(std::fstream& disk)
     while(true)
     {
         FileDir dir;
-        readDisk(disk, &dir, sizeof(FileDir), FILE_AREA_OFFSET + index * BYTE_PER_BLOCK);
+        readDisk(disk, &dir, sizeof(FileDir), index * BYTE_PER_BLOCK);
         if (dir.is_root())
             full_path = dir.getFileName() + full_path;
         else

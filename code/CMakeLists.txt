@@ -27,3 +27,24 @@ add_executable(
 
 # 链接库
 target_link_libraries(main wirteDisk)
+
+# 单元测试目标
+# 自带 main(), 因此排除 main.cpp; test.cpp 是演示程序的手工调试块, 同样排除
+add_executable(
+    unittest
+    unittest/main.cpp
+    unittest/test_superblock.cpp
+    unittest/test_inode.cpp
+    unittest/test_buffer.cpp
+    unittest/test_fileapi.cpp
+    unittest/test_boundary.cpp
+    shell.cpp
+    filedir.cpp
+    format.cpp
+    inode.cpp
+    superblock.cpp
+    buffer.cpp
+    openfile.cpp
+)
+
+target_link_libraries(unittest wirteDisk)

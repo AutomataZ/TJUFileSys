@@ -167,10 +167,16 @@ int SuperBlock::distributeBlk(std::fstream& disk)
             // 读 ret 的前 101 个字
             int addr = ret * BYTE_PER_BLOCK;
             readDisk(disk, &s_nfree, sizeof(int), addr);
-            int ini = s_nfree == BLOCK_IN_GROUP - 1 ? 1 : 0; // 最后一个索引块需要判断一下
-            for (int i = ini, j = 0; i < s_nfree; i++, j++)
+            // 索引块的排布是"字 0 记数量, 其后紧跟该数量的块号"。
+            // 唯一的例外是最后一块 (7993): 它只有 99 个块号, 字 1 被留作结束标志,
+            // 块号因此从字 2 开始 —— ini 就是给这个整体偏移用的。
+            int ini = s_nfree == BLOCK_IN_GROUP - 1 ? 1 : 0;
+            // 循环跑满 s_nfree 次, 填满 s_free[0..s_nfree-1]: 无论读几个块号, 起点一律
+            // 是字 ini + 1, 也就是把 ini 算在地址上。最后一块只有 99 个块号, 所以它比
+            // 常规的索引块少读一个 —— 数量由 s_nfree 决定, 与 ini 无关。
+            for (int i = 0; i < s_nfree; i++)
             {
-                readDisk(disk, s_free + j, sizeof(int), (i + 1) * sizeof(int) + addr);
+                readDisk(disk, s_free + i, sizeof(int), addr + (ini + 1 + i) * sizeof(int));
             }
         }
         return ret;

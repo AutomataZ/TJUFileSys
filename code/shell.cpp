@@ -2,6 +2,9 @@
 #include <sstream>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
+#include <cerrno>
+#include <climits>
 #include <string>
 #include "./shell.h"
 #include "format.h"
@@ -25,7 +28,7 @@ void Shell::init(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, O
         readDisk(disk, &inode, sizeof(Inode), INODE_AREA_OFFSET + i * sizeof(Inode));
         inode.i_number = i;
         int blk_index = inode.BMap(disk, 0);
-        readDisk(disk, &dir, sizeof(FileDir), FILE_AREA_OFFSET + blk_index * BYTE_PER_BLOCK);
+        readDisk(disk, &dir, sizeof(FileDir), blk_index * BYTE_PER_BLOCK);
         if (dir.is_root())
         {
             flag = 1;
@@ -75,16 +78,24 @@ string getFileNameByInodeIndex(std::fstream& disk, int index)
     readDisk(disk, &inode, sizeof(Inode), INODE_AREA_OFFSET + index * sizeof(Inode));
     int blkno = inode.BMap(disk, 0); //物理块号
     FileDir dir;
-    readDisk(disk, &dir, sizeof(FileDir), FILE_AREA_OFFSET + blkno * BYTE_PER_BLOCK); //读入目录项
+    readDisk(disk, &dir, sizeof(FileDir), blkno * BYTE_PER_BLOCK); //读入目录项
     return dir.getFileName();
 }
 
 void newFile(int mode, string name, std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& t_table, int size)
 {
+    // size 只在 normal_file 分支参与分配。负数会让分配循环算出负的盘块数,
+    // 并把 d_size 一并推成负数, 在这里直接拒绝
+    if (mode == FILE_MODE::normal_file && size < 0)
+    {
+        cout << "文件大小不能为负数: " << size << endl;
+        return;
+    }
+
     // 查找当前目录下是否存在同名同类型的文件
     int c_dir_index = getCurrentBlk(disk, i_table);
     int sub_file_num = getCurrentDirSubFileNum(disk, i_table);
-    int file_content_offset = FILE_AREA_OFFSET + c_dir_index * BYTE_PER_BLOCK + sizeof(FileDir);
+    int file_content_offset = c_dir_index * BYTE_PER_BLOCK + sizeof(FileDir);
     for (int i = 0; i < sub_file_num; i++)
     {
         int16_t inode_index;
@@ -123,16 +134,23 @@ void newFile(int mode, string name, std::fstream& disk, SuperBlock& sblk, MemIno
     }
     else if (mode == FILE_MODE::normal_file)
     {
-        // 首先计算需要分配几个盘块
-        int blk_num = size / BYTE_PER_BLOCK + !!(size % BYTE_PER_BLOCK);
+        // 需要分配几个盘块: 首块开头 16 字节是自己的目录项, 装不下内容, 所以是
+        // ceil((size + 16) / 512) —— blocksForFileContent 算的就是这个容量式
+        int blk_num = blocksForFileContent(size);
+        // 申报 0 字节时上面算出 0 块, 但文件至少要占一块: 目录项(文件名)就写在
+        // 文件首块的开头, 没有块就没有地方写名字。
+        if (blk_num == 0)
+            blk_num = 1;
+
         for (int i = 0; i < blk_num; i++)
         {
             int blk_index = sblk.distributeBlk(disk);
             new_inode.appendBlk(disk, sblk, inode_index, blk_index);
-            if (i != blk_num - 1)
-                new_inode.changeSize(BYTE_PER_BLOCK);
-            else
-                new_inode.changeSize(size % 512);
+            // 加完这一块之后 d_size 该是多少: 中间各块填满(装下 B 块的文件是
+            // B*512 - 16 字节, 每块开头那 16 字节是目录项, 不装内容), 最后一块
+            // 收在申报的 size 上。changeSize 是增量, 所以这里递推地补差值。
+            int target = (i == blk_num - 1) ? size : (i + 1) * BYTE_PER_BLOCK - FILE_DIR_SIZE;
+            new_inode.changeSize(target - new_inode.getSize());
         }
         new_inode.setMode(mode);
     }
@@ -149,7 +167,7 @@ int openCloseFile(int mode, string name, std::fstream& disk, SuperBlock& sblk, M
     // 查找当前目录下是否存在同名的普通文件
     int c_dir_index = getCurrentBlk(disk, i_table);
     int sub_file_num = getCurrentDirSubFileNum(disk, i_table);
-    int file_content_offset = FILE_AREA_OFFSET + c_dir_index * BYTE_PER_BLOCK + sizeof(FileDir);
+    int file_content_offset = c_dir_index * BYTE_PER_BLOCK + sizeof(FileDir);
     for (int i = 0; i < sub_file_num; i++)
     {
         int16_t inode_index;
@@ -161,7 +179,7 @@ int openCloseFile(int mode, string name, std::fstream& disk, SuperBlock& sblk, M
             readDisk(disk, &inode, sizeof(Inode), INODE_AREA_OFFSET + inode_index * sizeof(Inode));
             int blkno = inode.BMap(disk, 0);
             FileDir dir;
-            readDisk(disk, &dir, sizeof(FileDir), FILE_AREA_OFFSET + blkno * BYTE_PER_BLOCK); //读入目录项
+            readDisk(disk, &dir, sizeof(FileDir), blkno * BYTE_PER_BLOCK); //读入目录项
             if (dir.is_open(i_table, f_table) && mode == OpenClose::open)
             {
                 cout << "文件" << name << "已打开" << endl;
@@ -196,7 +214,7 @@ std::string readWriteFile(int mode, string name, string& str, int size, std::fst
     // 查找当前目录下是否存在同名的普通文件
     int c_dir_index = getCurrentBlk(disk, i_table);
     int sub_file_num = getCurrentDirSubFileNum(disk, i_table);
-    int file_content_offset = FILE_AREA_OFFSET + c_dir_index * BYTE_PER_BLOCK + sizeof(FileDir);
+    int file_content_offset = c_dir_index * BYTE_PER_BLOCK + sizeof(FileDir);
     for (int i = 0; i < sub_file_num; i++)
     {
         int16_t inode_index; //对应文件的inode标号
@@ -209,7 +227,7 @@ std::string readWriteFile(int mode, string name, string& str, int size, std::fst
             //blkno是该文件的起始块
             int blkno = inode.BMap(disk, 0);
             FileDir dir;
-            readDisk(disk, &dir, sizeof(FileDir), FILE_AREA_OFFSET + blkno * BYTE_PER_BLOCK); //读入目录项
+            readDisk(disk, &dir, sizeof(FileDir), blkno * BYTE_PER_BLOCK); //读入目录项
             if (!dir.is_open(i_table, f_table))
             {
                 cout << "文件" << name << "未打开" << endl;
@@ -220,7 +238,7 @@ std::string readWriteFile(int mode, string name, string& str, int size, std::fst
                 //取得文件指针
                 int cur = f_table.find(inode_index);
                 int pointer_offset = f_table.file[cur].f_offset; //文件指针的位置
-                int start_offset = FILE_AREA_OFFSET + blkno * BYTE_PER_BLOCK + sizeof(FileDir) + pointer_offset; //读写开始的位置
+                int start_offset = blkno * BYTE_PER_BLOCK + sizeof(FileDir) + pointer_offset; //读写开始的位置
                 //cout << "读写开始的位置是" << start_offset << endl;
                 //int start_blk = start_offset / BYTE_PER_BLOCK + !!(start_offset % BYTE_PER_BLOCK); //读写开始的块号
                 int start_blk = inode.BMap(disk, (sizeof(FileDir) + pointer_offset) / BYTE_PER_BLOCK);
@@ -228,7 +246,7 @@ std::string readWriteFile(int mode, string name, string& str, int size, std::fst
 
                 int start_cur = start_offset % BYTE_PER_BLOCK; //在块内，读写开始的位置
                 int end_cur = (start_cur + size - 1) % BYTE_PER_BLOCK; //在块内，读写结束的位置
-                int blk_num = size / BYTE_PER_BLOCK + !!(size % BYTE_PER_BLOCK); //需要读入的块数
+                int blk_num = blocksSpanned(start_cur, size); //需要读入的块数
 
                 if (pointer_offset + size > inode.getSize()) //如果读写大小超过了文件上限
                 {
@@ -238,39 +256,42 @@ std::string readWriteFile(int mode, string name, string& str, int size, std::fst
                         //size修改为文件上限减去读写开始位置
                         size = inode.getSize() - pointer_offset;
                         end_cur = (start_cur + size - 1) % BYTE_PER_BLOCK;
-                        blk_num = size / BYTE_PER_BLOCK + !!(size % BYTE_PER_BLOCK);
+                        blk_num = blocksSpanned(start_cur, size);
                     }
                     //如果写大小超过文件上限
                     else if (mode == ReadWrite::write)
                     {
-                        //更新inode内容
-                        //新增的字节数
-                        int new_byte = pointer_offset + size - inode.getSize();
-                        //cout << "new_byte: " << new_byte << endl;
-                        //判断新增几个blk
-                        //最后一个块还剩余多少空闲字节
-                        int empty_byte = (inode.getSize() + sizeof(FileDir)) % BYTE_PER_BLOCK;
-                        //cout << "empty_byte: " << empty_byte << endl;
-                        int new_blk_num = new_byte > empty_byte ? 
-                                            (new_byte - empty_byte) / BYTE_PER_BLOCK + !!((new_byte - empty_byte) % BYTE_PER_BLOCK) + 1 : 
-                                            0;
-                        //blk_num += new_blk_num;
+                        // 扩容后的文件大小: 要装下"读写指针位置 + 本次写入"
+                        const int new_size = pointer_offset + size;
+
+                        // 现有的块数。0 字节文件也占着首块(目录项在里面), 至少按 1 块算
+                        int old_blk_num = blocksForFileContent(inode.getSize());
+                        if (old_blk_num == 0)
+                            old_blk_num = 1;
+
+                        // 先把 d_size 补齐到"已占 old_blk_num 块"的容量, 再往上加。
+                        // appendBlk 是按 d_size 折算出的块数挑槽位的, d_size 与已占块数
+                        // 对不上就会挑错槽位。0 字节文件正是这种情况: d_size 是 0, 折算
+                        // 出 0 块, 第一次 appendBlk 会以为第 0 个槽位还空着, 把新块写进
+                        // d_addr[0], 覆盖掉原首块。
+                        inode.changeSize(old_blk_num * BYTE_PER_BLOCK - FILE_DIR_SIZE - inode.getSize());
+
+                        // 目标块数 - 现有块数, 同样按 blocksForFileContent 折算
+                        const int new_blk_num = blocksForFileContent(new_size) - old_blk_num;
+                        //cout << "新申请" << new_blk_num << "个盘块" << endl;
                         for (int i = 0; i < new_blk_num; i++)
                         {
                             int blk_index = sblk.distributeBlk(disk);
                             inode.appendBlk(disk, sblk, inode_index, blk_index);
                             //cout << "新申请了盘块" << blk_index << endl;
-                            if (i != new_blk_num - 1)
-                            {
-                                inode.changeSize(BYTE_PER_BLOCK);
-                                //cout << "新加了" << BYTE_PER_BLOCK << endl;
-                            }
-                            else
-                            {
-                                inode.changeSize(new_byte - (new_blk_num - 1) * BYTE_PER_BLOCK);
-                                //cout << "新加了" << (new_byte - (new_blk_num - 1) * BYTE_PER_BLOCK) << endl;
-                            }
+                            // 同 newFile: 加完这一块之后 d_size 该是"装下
+                            // old_blk_num + i + 1 块"的字节数。changeSize 是增量,
+                            // 所以补的是目标值与当前值的差
+                            int target = (old_blk_num + i + 1) * BYTE_PER_BLOCK - FILE_DIR_SIZE;
+                            inode.changeSize(target - inode.getSize());
                         }
+                        // 盘块备齐, d_size 落到准确的字节数
+                        inode.changeSize(new_size - inode.getSize());
                         // 将inode内容写入磁盘
                         writeDisk(disk, &inode, sizeof(Inode), INODE_AREA_OFFSET + inode_index * sizeof(Inode));
                         
@@ -350,6 +371,36 @@ int inputToCmd(const string& input, string& cmd, string(&args)[MAX_ARGS_NUM])
     return 1;
 }
 
+/*
+    把参数解析成一个非负整数, 成功返回 1, 失败返回 0。
+
+    不能直接用 atoi: 它对 "abc" / "kb" / "0x10" / "+0" / "" 一律返回 0,
+    于是"敲错了"会被静默当成"大小为 0"。这里要求整个字符串都是数字, 非数字
+    的参数一律判失败, 由调用方报用法错误。
+*/
+int parseNonNegInt(const string& s, int& out)
+{
+    if (s.empty())
+        return 0;
+    size_t i = (s[0] == '+') ? 1 : 0;   // 允许单个前导 '+', 与 atoi 的习惯一致
+    if (i >= s.size())
+        return 0;
+    for (size_t j = i; j < s.size(); j++)
+    {
+        if (!isdigit(static_cast<unsigned char>(s[j])))
+            return 0;
+    }
+
+    // 不用 atoi: 溢出时它是未定义行为。宁可把 "99999999999999999999"
+    // 判成非法参数, 也不要拿到一个截断后的值去分配盘块。
+    errno = 0;
+    long v = strtol(s.c_str(), nullptr, 10);
+    if (errno == ERANGE || v < 0 || v > INT_MAX)
+        return 0;
+    out = static_cast<int>(v);
+    return 1;
+}
+
 void fformat(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTable& f_table, BufferMgr& b_mgr)
 {
     //清空所有打开项
@@ -371,7 +422,7 @@ void ls(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, OpenFileTa
     // 从磁盘读出所有子文件的inode号
     // 首先计算文件内容开始的地址
     // 人为限制单个文件下子文件数量，保证一个块内可以找完
-    int file_content_offset = FILE_AREA_OFFSET + c_dir_index * BYTE_PER_BLOCK + sizeof(FileDir);
+    int file_content_offset = c_dir_index * BYTE_PER_BLOCK + sizeof(FileDir);
     for (int i = 0; i < sub_file_num; i++)
     {
         int16_t inode_index;
@@ -392,7 +443,7 @@ void cd(std::string dirName, std::fstream& disk, SuperBlock& sblk, MemInodeTable
     // 查找当前目录下是否存在同名目录
     int c_dir_index = getCurrentBlk(disk, i_table);
     int sub_file_num = getCurrentDirSubFileNum(disk, i_table);
-    int file_content_offset = FILE_AREA_OFFSET + c_dir_index * BYTE_PER_BLOCK + sizeof(FileDir);
+    int file_content_offset = c_dir_index * BYTE_PER_BLOCK + sizeof(FileDir);
     //cout << "开始寻找" << endl;
     for (int i = 0; i < sub_file_num; i++)
     {
@@ -406,7 +457,7 @@ void cd(std::string dirName, std::fstream& disk, SuperBlock& sblk, MemInodeTable
             readDisk(disk, &inode, sizeof(Inode), INODE_AREA_OFFSET + inode_index * sizeof(Inode));
             int blkno = inode.BMap(disk, 0); //物理块号
             FileDir dir;
-            readDisk(disk, &dir, sizeof(FileDir), FILE_AREA_OFFSET + blkno * BYTE_PER_BLOCK); //读入目录项
+            readDisk(disk, &dir, sizeof(FileDir), blkno * BYTE_PER_BLOCK); //读入目录项
             dir.open(disk, i_table, f_table);
             i_table.modifyCurrentDir(i_table.find(inode_index));
             //cout << "当前打开inode是: " << endl;
@@ -422,7 +473,7 @@ void cd(std::string dirName, std::fstream& disk, SuperBlock& sblk, MemInodeTable
         readDisk(disk, &inode, sizeof(Inode), INODE_AREA_OFFSET + index * sizeof(Inode));
         int blkno = inode.BMap(disk, 0); //当前磁盘的物理块号
         FileDir dir;
-        readDisk(disk, &dir, sizeof(FileDir), FILE_AREA_OFFSET + blkno * BYTE_PER_BLOCK); //读入目录项
+        readDisk(disk, &dir, sizeof(FileDir), blkno * BYTE_PER_BLOCK); //读入目录项
         if (dir.is_root()) //根目录没有父目录
             return;
         i_table.erase(disk, dir.getInode());
@@ -499,7 +550,7 @@ int flseek(string fileName, int offset, std::fstream& disk, SuperBlock& sblk, Me
     // 查找当前目录下是否存在同名的普通文件
     int c_dir_index = getCurrentBlk(disk, i_table);
     int sub_file_num = getCurrentDirSubFileNum(disk, i_table);
-    int file_content_offset = FILE_AREA_OFFSET + c_dir_index * BYTE_PER_BLOCK + sizeof(FileDir);
+    int file_content_offset = c_dir_index * BYTE_PER_BLOCK + sizeof(FileDir);
     for (int i = 0; i < sub_file_num; i++)
     {
         int16_t inode_index; //对应文件的inode标号
@@ -512,7 +563,7 @@ int flseek(string fileName, int offset, std::fstream& disk, SuperBlock& sblk, Me
             //blkno是该文件的起始块
             int blkno = inode.BMap(disk, 0);
             FileDir dir;
-            readDisk(disk, &dir, sizeof(FileDir), FILE_AREA_OFFSET + blkno * BYTE_PER_BLOCK); //读入目录项
+            readDisk(disk, &dir, sizeof(FileDir), blkno * BYTE_PER_BLOCK); //读入目录项
             if (!dir.is_open(i_table, f_table))
             {
                 cout << "文件" << fileName << "未打开" << endl;
@@ -547,69 +598,62 @@ void fdelete(string fileName, std::fstream& disk, SuperBlock& sblk, MemInodeTabl
 {
     int c_dir_index = getCurrentBlk(disk, i_table);
     int sub_file_num = getCurrentDirSubFileNum(disk, i_table);
-    int file_content_offset = FILE_AREA_OFFSET + c_dir_index * BYTE_PER_BLOCK + sizeof(FileDir);
+    int file_content_offset = c_dir_index * BYTE_PER_BLOCK + sizeof(FileDir);
     for (int i = 0; i < sub_file_num; i++)
     {
         //该文件的inode_index
         int16_t inode_index;
         readDisk(disk, &inode_index, sizeof(int16_t), file_content_offset + i * sizeof(int16_t));
-        
+
+        // 先比名字, 不匹配的子文件直接跳过 —— 读 inode、判断"是否打开"都应当留在
+        // 这道名字过滤器之内。"是否打开"针对的是要删的那个文件, 若在过滤之前就判断,
+        // 目录里只要存在任何一个打开的文件, 删除另一个已关闭的文件也会被拒绝。
+        if (fileName != getFileNameByInodeIndex(disk, inode_index))
+            continue;
+
         //取要删除文件的inode
         Inode inode;
         readDisk(disk, &inode, sizeof(Inode), INODE_AREA_OFFSET + inode_index * sizeof(Inode));
+        int mode = inode.getMode();
 
         //不允许删除打开的文件
         int blkno = inode.BMap(disk, 0);
         FileDir dir;
-        readDisk(disk, &dir, sizeof(FileDir), FILE_AREA_OFFSET + blkno * BYTE_PER_BLOCK); //读入目录项
+        readDisk(disk, &dir, sizeof(FileDir), blkno * BYTE_PER_BLOCK); //读入目录项
         if (dir.is_open(i_table, f_table))
         {
             cout << "文件" << fileName << "未关闭" << endl;
             return;
         }
-        
-        //将之后的子inode号全都向前移动一个
-        if (fileName == getFileNameByInodeIndex(disk, inode_index))
-        {
-            for (int j = i; j < sub_file_num - 1; j++)
-            {
-                int16_t tem;
-                readDisk(disk, &tem, sizeof(int16_t), file_content_offset + (j + 1) * sizeof(int16_t));
-                writeDisk(disk, &tem, sizeof(int16_t), file_content_offset + j * sizeof(int16_t));
-            }
 
-            //取当前目录对应的inode，缩减inode对应的d_size
-            int c_inode_index = i_table.inode[i_table.getCurrentDir()].i_number;
-            Inode c_inode;
-            readDisk(disk, &c_inode, sizeof(Inode), INODE_AREA_OFFSET + c_inode_index * sizeof(Inode));
-            c_inode.eraseSubDirSize();
-            writeDisk(disk, &c_inode, sizeof(Inode), INODE_AREA_OFFSET + c_inode_index * sizeof(Inode));
-        }
-
-        // 对于普通文件可以直接删除
-        if (fileName == getFileNameByInodeIndex(disk, inode_index) && 
-            FILE_MODE::normal_file == getFileModeByInodeIndex(disk, inode_index))
+        // 目录必须为空才允许删除。这个判断要放在摘目录项之前: 目录项一旦被后面的项
+        // 前移覆盖, 目录就不可达了, 它的 inode 与盘块再也回收不了。先判后摘, 被拒绝
+        // 的目录保持原样, 仍然看得见、也删得掉。
+        if (mode == FILE_MODE::dir_file && inode.getSize() != 0)
         {
-            inode.releaseAllBlk(disk, sblk);
-            sblk.releaseInode(inode_index);
+            cout << "文件夹" << fileName << "非空" << endl;
             return;
         }
-        // 对于目录，需要判断目录是否为空，若有内容则不予删除
-        else if (fileName == getFileNameByInodeIndex(disk, inode_index) && 
-            FILE_MODE::dir_file == getFileModeByInodeIndex(disk, inode_index))
+
+        // 到这里才真正动手: 将之后的子inode号全都向前移动一个
+        for (int j = i; j < sub_file_num - 1; j++)
         {
-            //判断inode里面的文件大小就可以
-            if (inode.getSize() != 0)
-            {
-                cout << "文件夹" << fileName << "非空" << endl;
-            }
-            else
-            {
-                inode.releaseAllBlk(disk, sblk);
-                sblk.releaseInode(inode_index);
-            }
-            return;
+            int16_t tem;
+            readDisk(disk, &tem, sizeof(int16_t), file_content_offset + (j + 1) * sizeof(int16_t));
+            writeDisk(disk, &tem, sizeof(int16_t), file_content_offset + j * sizeof(int16_t));
         }
+
+        //取当前目录对应的inode，缩减inode对应的d_size
+        int c_inode_index = i_table.inode[i_table.getCurrentDir()].i_number;
+        Inode c_inode;
+        readDisk(disk, &c_inode, sizeof(Inode), INODE_AREA_OFFSET + c_inode_index * sizeof(Inode));
+        c_inode.eraseSubDirSize();
+        writeDisk(disk, &c_inode, sizeof(Inode), INODE_AREA_OFFSET + c_inode_index * sizeof(Inode));
+
+        // 普通文件与空目录到此都可以回收 inode 与盘块了
+        inode.releaseAllBlk(disk, sblk);
+        sblk.releaseInode(inode_index);
+        return;
     }
     cout << "当前路径下不存在文件" << fileName << endl;
     return;
@@ -780,8 +824,10 @@ void Shell::usr(std::fstream& disk, SuperBlock& sblk, MemInodeTable& i_table, Op
         }
         else if (cmd == cmd_supported[4]) //fcreat
         {
-            int size = atoi(args[1].c_str());
-            if (args[1].empty())
+            int size = 0;
+            // 文件名和大小都必须给出, 且大小得是个非负整数:
+            // "fcreat foo abc" 应当报用法错误, 而不是静默建出一个 0 字节的 foo
+            if (args[0].empty() || !parseNonNegInt(args[1], size))
             {
                 usage();
                 continue;
