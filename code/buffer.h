@@ -1,5 +1,9 @@
 #pragma once
 #include "define.h"
+
+#include <list>
+#include <unordered_map>
+
 class DiskFile;
 
 /*
@@ -15,8 +19,10 @@ public:
     Buffer();
     Buffer(int blkno);
     char* getLoad(){return load;}
+    /// @brief 直接改块号。改了它, BQueue 里那份"块号 -> 链表位置"的索引就指错了,
+    ///        所以只能在该块还没入队时用
     void set(int blkno){b_blkno = blkno;}
-    int getBlkno(){return b_blkno;}
+    int getBlkno() const {return b_blkno;}
     friend class BufferMgr;
     friend class BQueue;
 #ifdef DEBUG_ENV
@@ -27,24 +33,38 @@ public:
 };
 
 /*
-    实现一个可以将任意元素放到队列末尾的队列
-    队列元素为Buffer
-    实际上是"假"队列, 使用数组模拟实现
-    提供一个寻找函数
+    缓存队列, 用哈希表 + 双向链表实现 LRU:
+      q      双向链表, 按访问顺序排列 —— 队首是最新访问的, 队尾是最久未使用的
+      index  块号 -> 该块在链表里的位置。有它才能 O(1) 找到命中的块, 并把它 O(1) 挪到队首
+    规则: 新块入队放队首; 命中时移到队首; 淘汰时摘队尾。
 */
 class BQueue{
 protected:
-    Buffer q[MAX_BQUEUE_SIZE];
-    int num;
-    Buffer err;
+    std::list<Buffer> q;
+    std::unordered_map<int, std::list<Buffer>::iterator> index;
+    Buffer err; // find 未命中时返回的哨兵
 public:
     BQueue();
     int size();
     bool empty();
+
+    /// @brief 摘掉队尾, 即最久未使用的那一块 (淘汰)
     void pop();
-    void push(Buffer b);
+
+    /// @brief 新块入队, 放到队首(最近使用端)
+    /// @param b 要入队的缓存块
+    void push(const Buffer& b);
+
+    /// @brief 队首的缓存块: 最近使用过的那个
     Buffer front();
+
+    /// @brief 队尾的缓存块: 最久未使用的那个, 下一个被淘汰
+    Buffer back();
+
+    /// @brief 命中后把该块移到队首, 刷成最近使用
+    /// @param blkno 命中的盘块号; 队列里没有这个块就什么都不做
     void update(int blkno);
+
     Buffer* find(int blkno);
 
     /// @brief 把某个盘块的缓存从队列里摘掉, 不回写

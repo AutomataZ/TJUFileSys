@@ -10,8 +10,8 @@
 // 队列上限 MAX_BQUEUE_SIZE 在 DEBUG_ENV 下是 5, 所以只要碰 6 个不同的块
 // 就能触发 LRU 淘汰, 无需构造大负载。
 //
-// BQueue 的 q[] 是 protected, 因此顺序只能通过公开的 front() 观察:
-// 队首即最久未使用、下一个被淘汰的缓存块。
+// BQueue 的链表与索引都是 protected, 因此顺序只能通过公开的接口观察:
+// front() 是最近使用的, back() 是最久未使用、下一个被淘汰的缓存块。
 //
 // 关于坐标: 缓存内部按 blkno * BYTE_PER_BLOCK 定位, 与系统其余部分一致
 // (块号是绝对块号, 见 define.h 中 FILE_AREA_OFFSET 处的说明)。
@@ -51,11 +51,13 @@ UT_TEST(buffer, queue_basic_semantics, "队列 push/pop/size/empty 基本语义"
     UT_CHECK_EQ(q.size(), 2);
     UT_CHECK_MSG(!q.empty(), "push 之后队列不应为空");
 
-    UT_CHECK_EQ(q.front().getBlkno(), 10);   // push 到队尾, front 是最早的
+    UT_CHECK_EQ(q.front().getBlkno(), 11);   // 新块进队首, 所以 11 是最近的
+    UT_CHECK_EQ(q.back().getBlkno(), 10);    // 10 被顶到了队尾, 是最久未使用的
 
-    q.pop();
+    q.pop();                                 // pop 摘队尾 = 淘汰 10
     UT_CHECK_EQ(q.size(), 1);
     UT_CHECK_EQ(q.front().getBlkno(), 11);
+    UT_CHECK_EQ(q.back().getBlkno(), 11);
 }
 
 UT_TEST(buffer, queue_push_respects_capacity, "队列满时 push 不增长")
@@ -65,7 +67,7 @@ UT_TEST(buffer, queue_push_respects_capacity, "队列满时 push 不增长")
         q.push(Buffer(200 + i));
 
     UT_CHECK_EQ(q.size(), MAX_BQUEUE_SIZE);
-    UT_CHECK_EQ(q.front().getBlkno(), 200);
+    UT_CHECK_EQ(q.back().getBlkno(), 200);   // 最先 push 的 200 被顶到了队尾
 }
 
 UT_TEST(buffer, find_miss_returns_sentinel, "find 未命中返回块号为 -1 的哨兵")
@@ -77,19 +79,20 @@ UT_TEST(buffer, find_miss_returns_sentinel, "find 未命中返回块号为 -1 �
     UT_CHECK_EQ(q.find(999)->getBlkno(), -1);   // 哨兵, 不是 nullptr
 }
 
-UT_TEST(buffer, update_moves_hit_to_tail, "update 把命中的块移到队尾")
+UT_TEST(buffer, update_moves_hit_to_head, "update 把命中的块移到队首")
 {
     FsFixture f;
     for (int i = 0; i < 3; i++)
         f.b_mgr.getBlk(f.disk, 100 + i);
 
-    UT_CHECK_EQ(f.b_mgr.bq.front().getBlkno(), 100);
+    UT_CHECK_EQ(f.b_mgr.bq.back().getBlkno(), 100);   // 100 最早被访问, 在队尾
     UT_CHECK_EQ(f.b_mgr.bq.size(), 3);
 
-    f.b_mgr.getBlk(f.disk, 100);   // 命中队首, 应被移到队尾
+    f.b_mgr.getBlk(f.disk, 100);   // 命中队尾, 应被移到队首
 
     UT_CHECK_EQ(f.b_mgr.bq.size(), 3);            // 命中不增加长度
-    UT_CHECK_EQ(f.b_mgr.bq.front().getBlkno(), 101);
+    UT_CHECK_EQ(f.b_mgr.bq.front().getBlkno(), 100);
+    UT_CHECK_EQ(f.b_mgr.bq.back().getBlkno(), 101);
     UT_CHECK_EQ(f.b_mgr.bq.find(100)->getBlkno(), 100);   // 仍在队列中
 }
 
@@ -100,11 +103,11 @@ UT_TEST(buffer, lru_eviction, "队满时淘汰最久未使用的块")
         f.b_mgr.getBlk(f.disk, 100 + i);
 
     UT_CHECK_EQ(f.b_mgr.bq.size(), MAX_BQUEUE_SIZE);
-    UT_CHECK_EQ(f.b_mgr.bq.front().getBlkno(), 100);
+    UT_CHECK_EQ(f.b_mgr.bq.back().getBlkno(), 100);
 
     // 先触碰 100, 让它不再是"最久未使用"
     f.b_mgr.getBlk(f.disk, 100);
-    UT_CHECK_EQ(f.b_mgr.bq.front().getBlkno(), 101);
+    UT_CHECK_EQ(f.b_mgr.bq.back().getBlkno(), 101);
 
     // 再放一个新块, 被淘汰的应是 101 而不是刚碰过的 100
     f.b_mgr.getBlk(f.disk, 999);
@@ -169,7 +172,7 @@ UT_TEST(buffer, eviction_flushes_dirty_block, "淘汰脏块时自动写回磁盘
 
     std::string data = "world";
     f.b_mgr.Bwrite(f.disk, victim, data, 0, 5);
-    UT_CHECK_EQ(f.b_mgr.bq.front().getBlkno(), victim);
+    UT_CHECK_EQ(f.b_mgr.bq.back().getBlkno(), victim);   // 它是唯一的块, 下一个被淘汰
 
     // 再塞满一整轮队列, 把 victim 挤出去
     for (int i = 0; i < MAX_BQUEUE_SIZE; i++)

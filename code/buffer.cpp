@@ -8,8 +8,6 @@
 #include <iomanip>
 #endif
 
-const int BLKNO_NOT_FOUND = -1;
-
 Buffer::Buffer()
 {
     b_blkno = -1;
@@ -53,131 +51,99 @@ void Buffer::printBrief()
 
 BQueue::BQueue()
 {
-    num = 0;
 }
 
 int BQueue::size()
 {
-    return num;
+    return (int)q.size();
 }
 
 bool BQueue::empty()
 {
-    return num == 0;
+    return q.empty();
 }
 
 Buffer BQueue::front()
 {
-    return q[0];
+    return q.front();
 }
 
-void BQueue::push(Buffer b)
+Buffer BQueue::back()
 {
-    if (this->size() >= MAX_BQUEUE_SIZE)
+    return q.back();
+}
+
+void BQueue::push(const Buffer& b)
+{
+    // 同一个块号在队列里只能有一份: 出现第二份的话, index 会指向新节点,
+    // 旧节点就成了链表里有、索引里没有的孤儿, 它以后被淘汰时还会误删别人的索引
+    if (this->size() >= MAX_BQUEUE_SIZE || find(b.getBlkno())->getBlkno() >= 0)
         return;
-    q[num++] = b;
+    q.push_front(b); // 刚进来的块就是最近使用过的, 进队首
+    index[b.getBlkno()] = q.begin();
 }
 
 void BQueue::pop()
 {
     if (this->empty())
         return;
-    for (int i = 1; i < num; i++)
-        q[i - 1] = q[i];
-
-    q[num - 1].b_blkno = -1;
-    q[num - 1].del_write = false;
-    q[num - 1].new_create = true;
-    memset(q[num - 1].load, 0, sizeof(q[num - 1].load));
-
-    num--;
+    index.erase(q.back().getBlkno());
+    q.pop_back(); // 淘汰队尾那个最久未使用的
 }
 
-// 将 blkno 对应的块移动到队列末尾
+// 将 blkno 对应的块移动到队首(最近使用端)
 void BQueue::update(int blkno)
 {
-    int flag = BLKNO_NOT_FOUND;
-    for (int i = 0; i < num; i++)
-    {
-        if (q[i].b_blkno == blkno)
-        {
-            flag = i;
-            break;
-        }
-    }
-    if (flag != BLKNO_NOT_FOUND && flag != num - 1)
-    {
-        Buffer temp = q[flag];
-        for (int i = flag; i < num; i++)
-        {
-            q[i] = q[i + 1];
-        }
-        q[num - 1] = temp;
-    }
+    auto it = index.find(blkno);
+    if (it == index.end())
+        return;
+    // splice 只改指针, 不拷贝元素, 被搬的迭代器也不失效 —— index 里存的正是它
+    q.splice(q.begin(), q, it->second);
 }
 
 Buffer* BQueue::find(int blkno)
 {
-    for (int i = 0; i < num; i++)
-    {
-        if(q[i].getBlkno() == blkno)
-        {
-            return q + i;
-        }
-    }
-    return &err;
+    auto it = index.find(blkno);
+    if (it == index.end())
+        return &err;
+    return &(*it->second);
 }
 
-// 摘掉队列中间的某一项: 与 pop 一样把后面的往前挪, 空出来的槽位照样清理干净
+// 摘掉队列中间的某一项, 不回写。先摘链表节点, 再摘索引 —— 反过来的话,
+// 链表节点还在, index 里却没有它了, 这个块就成了队列里没人认领的孤儿
 void BQueue::remove(int blkno)
 {
-    int flag = BLKNO_NOT_FOUND;
-    for (int i = 0; i < num; i++)
-    {
-        if (q[i].getBlkno() == blkno)
-        {
-            flag = i;
-            break;
-        }
-    }
-    if (flag == BLKNO_NOT_FOUND)
+    auto it = index.find(blkno);
+    if (it == index.end())
         return;
-
-    for (int i = flag + 1; i < num; i++)
-    {
-        q[i - 1] = q[i];
-    }
-
-    q[num - 1].b_blkno = -1;
-    q[num - 1].del_write = false;
-    q[num - 1].new_create = true;
-    memset(q[num - 1].load, 0, sizeof(q[num - 1].load));
-
-    num--;
+    q.erase(it->second);
+    index.erase(it);
 }
 
 #ifdef DEBUG_ENV
 void BQueue::print()
 {
-    std::cout << "队列中共有" << num << "个缓存块" << std::endl;
-    for (int i = 0; i < num; i++)
+    std::cout << "队列中共有" << q.size() << "个缓存块" << std::endl;
+    int i = 1;
+    for (Buffer& b : q)
     {
-        std::cout << "第" << i+1 << "个缓存为: " << std::endl;
-        q[i].print();
+        std::cout << "第" << i++ << "个缓存为: " << std::endl;
+        b.print();
     }
 }
 
 void BQueue::printBrief()
 {
-    // getBlk 命中时把块移到队尾, 队满时淘汰队首, 故下标 0 是最久未使用的
-    std::cout << "缓存队列 (队首 = 最久未使用, 下一个被淘汰): "
-              << num << " / " << MAX_BQUEUE_SIZE << std::endl;
-    for (int i = 0; i < num; i++)
+    // 按下标从小到大就是按"最近使用 -> 最久未使用"排列, 最后一个下一个被淘汰
+    std::cout << "缓存队列 (队首 = 最近使用, 队尾 = 最久未使用, 下一个被淘汰): "
+              << q.size() << " / " << MAX_BQUEUE_SIZE << std::endl;
+    int i = 0;
+    for (Buffer& b : q)
     {
-        std::cout << "  [" << i << "] ";
-        q[i].printBrief();
+        std::cout << "  [" << i++ << "] ";
+        b.printBrief();
     }
-    if (num == 0)
+    if (q.empty())
         std::cout << "  (空)" << std::endl;
 }
 #endif
@@ -190,11 +156,12 @@ Buffer* BufferMgr::getBlk(DiskFile& disk, int blkno)
     }
     else // 如果找不到就分配一个新的
     {
-        if (bq.size() >= MAX_BQUEUE_SIZE) // 如果满了要先弹出一个(LRU)
+        if (bq.size() >= MAX_BQUEUE_SIZE) // 如果满了要先淘汰一个(LRU: 队尾那个最久未使用)
         {
-            if (bq.front().del_write) // 如果有延迟写, 需要写回磁盘
+            Buffer victim = bq.back();
+            if (victim.del_write) // 如果有延迟写, 需要写回磁盘
             {
-                writeDisk(disk, bq.front().getLoad(), BYTE_PER_BLOCK, bq.front().getBlkno() * BYTE_PER_BLOCK);
+                writeDisk(disk, victim.getLoad(), BYTE_PER_BLOCK, victim.getBlkno() * BYTE_PER_BLOCK);
             }
             bq.pop();
         }
@@ -250,13 +217,13 @@ void BufferMgr::remove(int blkno)
 // 用在提交点上会让后续访问全部落空, 而提交点只关心"盘上那份是全的"。
 void BQueue::flush(DiskFile& disk)
 {
-    for (int i = 0; i < num; i++)
+    for (Buffer& b : q)
     {
-        if (q[i].del_write)
+        if (b.del_write)
         {
-            writeDisk(disk, q[i].getLoad(), BYTE_PER_BLOCK, q[i].getBlkno() * BYTE_PER_BLOCK);
+            writeDisk(disk, b.getLoad(), BYTE_PER_BLOCK, b.getBlkno() * BYTE_PER_BLOCK);
             // 已经落到盘上了, 再挂着这个标记只会让它在淘汰时被重复写一遍
-            q[i].del_write = false;
+            b.del_write = false;
         }
     }
 }
@@ -270,9 +237,10 @@ void BufferMgr::clear(DiskFile& disk)
 {
     while(!bq.empty())
     {
-        if (bq.front().del_write)
+        Buffer victim = bq.back(); // 队尾 = 最久未使用, 正好是 pop 要摘的那个
+        if (victim.del_write)
         {
-            writeDisk(disk, bq.front().getLoad(), BYTE_PER_BLOCK, bq.front().getBlkno() * BYTE_PER_BLOCK);
+            writeDisk(disk, victim.getLoad(), BYTE_PER_BLOCK, victim.getBlkno() * BYTE_PER_BLOCK);
         }
         bq.pop();
     }
